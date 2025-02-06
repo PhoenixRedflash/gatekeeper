@@ -18,9 +18,9 @@ package v1beta1
 import (
 	"strings"
 
-	mtypes "github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
-	"github.com/open-policy-agent/gatekeeper/pkg/operations"
-	"github.com/open-policy-agent/gatekeeper/pkg/util"
+	mtypes "github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/operations"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -113,5 +113,5 @@ func KeyForMutatorID(id string, mID mtypes.ID) (string, error) {
 	// We must do this because K8s requires all lowercase letters for resource names
 	kind := strings.ToLower(mID.Kind)
 	name := mID.Name
-	return dashPacker(id, kind, name)
+	return DashPacker(id, kind, name)
 }

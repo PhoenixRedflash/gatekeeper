@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/open-policy-agent/opa/ast"
 	"github.com/open-policy-agent/opa/internal/compiler/wasm/opa"
 	"github.com/open-policy-agent/opa/internal/debug"
 	"github.com/open-policy-agent/opa/internal/wasm/encoding"
@@ -20,15 +19,16 @@ import (
 	"github.com/open-policy-agent/opa/internal/wasm/module"
 	"github.com/open-policy-agent/opa/internal/wasm/types"
 	"github.com/open-policy-agent/opa/internal/wasm/util"
-	"github.com/open-policy-agent/opa/ir"
-	opatypes "github.com/open-policy-agent/opa/types"
+	"github.com/open-policy-agent/opa/v1/ast"
+	"github.com/open-policy-agent/opa/v1/ir"
+	opatypes "github.com/open-policy-agent/opa/v1/types"
 )
 
 // Record Wasm ABI version in exported global variable
 const (
 	opaWasmABIVersionVal      = 1
 	opaWasmABIVersionVar      = "opa_wasm_abi_version"
-	opaWasmABIMinorVersionVal = 2
+	opaWasmABIMinorVersionVal = 3
 	opaWasmABIMinorVersionVar = "opa_wasm_abi_minor_version"
 )
 
@@ -142,6 +142,7 @@ var builtinsFunctions = map[string]string{
 	ast.ObjectKeys.Name:                 "builtin_object_keys",
 	ast.ObjectRemove.Name:               "builtin_object_remove",
 	ast.ObjectUnion.Name:                "builtin_object_union",
+	ast.ObjectUnionN.Name:               "builtin_object_union_n",
 	ast.Concat.Name:                     "opa_strings_concat",
 	ast.FormatInt.Name:                  "opa_strings_format_int",
 	ast.IndexOf.Name:                    "opa_strings_indexof",
@@ -1084,27 +1085,11 @@ func (c *Compiler) compileBlock(block *ir.Block) ([]instruction.Instruction, err
 			instrs = append(instrs, instruction.Call{Index: c.function(opaNumberSize)})
 			instrs = append(instrs, instruction.SetLocal{Index: c.local(stmt.Target)})
 		case *ir.EqualStmt:
-			if stmt.A != stmt.B { // constants, or locals, being equal here can skip the check
-				instrs = append(instrs, c.instrRead(stmt.A))
-				instrs = append(instrs, c.instrRead(stmt.B))
-				instrs = append(instrs, instruction.Call{Index: c.function(opaValueCompare)})
-				instrs = append(instrs, instruction.BrIf{Index: 0})
-			}
+			instrs = append(instrs, c.instrRead(stmt.A))
+			instrs = append(instrs, c.instrRead(stmt.B))
+			instrs = append(instrs, instruction.Call{Index: c.function(opaValueCompare)})
+			instrs = append(instrs, instruction.BrIf{Index: 0})
 		case *ir.NotEqualStmt:
-			if stmt.A == stmt.B { // same local, same bool constant, or same string constant
-				instrs = append(instrs, instruction.Br{Index: 0})
-				continue
-			}
-			_, okA := stmt.A.Value.(ir.Bool)
-			if _, okB := stmt.B.Value.(ir.Bool); okA && okB {
-				// not equal (checked above), but both booleans => not equal
-				continue
-			}
-			_, okA = stmt.A.Value.(ir.StringIndex)
-			if _, okB := stmt.B.Value.(ir.StringIndex); okA && okB {
-				// not equal (checked above), but both strings => not equal
-				continue
-			}
 			instrs = append(instrs, c.instrRead(stmt.A))
 			instrs = append(instrs, c.instrRead(stmt.B))
 			instrs = append(instrs, instruction.Call{Index: c.function(opaValueCompare)})
@@ -1148,6 +1133,17 @@ func (c *Compiler) compileBlock(block *ir.Block) ([]instruction.Instruction, err
 				instrs = append(instrs, instruction.GetLocal{Index: c.local(loc)})
 				instrs = append(instrs, instruction.Call{Index: c.function(opaValueType)})
 				instrs = append(instrs, instruction.I32Const{Value: opaTypeObject})
+				instrs = append(instrs, instruction.I32Ne{})
+				instrs = append(instrs, instruction.BrIf{Index: 0})
+			} else {
+				instrs = append(instrs, instruction.Br{Index: 0})
+				break
+			}
+		case *ir.IsSetStmt:
+			if loc, ok := stmt.Source.Value.(ir.Local); ok {
+				instrs = append(instrs, instruction.GetLocal{Index: c.local(loc)})
+				instrs = append(instrs, instruction.Call{Index: c.function(opaValueType)})
+				instrs = append(instrs, instruction.I32Const{Value: opaTypeSet})
 				instrs = append(instrs, instruction.I32Ne{})
 				instrs = append(instrs, instruction.BrIf{Index: 0})
 			} else {
@@ -1336,7 +1332,7 @@ func (c *Compiler) compileWithStmt(with *ir.WithStmt, result *[]instruction.Inst
 	return nil
 }
 
-func (c *Compiler) compileUpsert(local ir.Local, path []int, value ir.Operand, loc ir.Location, instrs []instruction.Instruction) []instruction.Instruction {
+func (c *Compiler) compileUpsert(local ir.Local, path []int, value ir.Operand, _ ir.Location, instrs []instruction.Instruction) []instruction.Instruction {
 
 	lcopy := c.genLocal() // holds copy of local
 	instrs = append(instrs, instruction.GetLocal{Index: c.local(local)})

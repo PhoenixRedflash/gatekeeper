@@ -7,10 +7,10 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/open-policy-agent/gatekeeper/pkg/fakes"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/path/parser"
-	mutationschema "github.com/open-policy-agent/gatekeeper/pkg/mutation/schema"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/fakes"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/path/parser"
+	mutationschema "github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/schema"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -36,8 +36,8 @@ type fakeMutator struct {
 	Default       *types.Anything
 }
 
-func (m *fakeMutator) Matches(*types.Mutable) bool {
-	return true // always matches
+func (m *fakeMutator) Matches(*types.Mutable) (bool, error) {
+	return true, nil // always matches
 }
 
 func (m *fakeMutator) Mutate(mutable *types.Mutable) (bool, error) {

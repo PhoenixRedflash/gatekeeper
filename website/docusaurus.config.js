@@ -1,7 +1,7 @@
 module.exports = {
   title: 'Gatekeeper',
   tagline: 'Policy Controller for Kubernetes',
-  url: 'https://open-policy-agent.github.io/gatekeeper/website/docs/',
+  url: 'https://open-policy-agent.github.io',
   baseUrl: '/gatekeeper/website/',
   onBrokenLinks: 'throw',
   favicon: 'img/favicon.ico',
@@ -23,9 +23,14 @@ module.exports = {
       logo: {
         alt: 'Gatekeeper logo',
         src: 'img/logo.svg',
-        href: 'https://open-policy-agent.github.io/gatekeeper/website/docs/',
+        href: 'https://open-policy-agent.github.io/gatekeeper/website/',
       },
       items: [
+        {
+          to: 'docs/',
+          label: 'Docs',
+          position: 'left',
+        },
         {
           href: 'https://open-policy-agent.github.io/gatekeeper-library/',
           label: 'Policy Library',
@@ -59,7 +64,7 @@ module.exports = {
             },
             {
               label: 'Meetings',
-              href: 'https://docs.google.com/document/d/1A1-Q-1OMw3QODs1wT6eqfLTagcGmgzAJAjJihiO3T48/edit)',
+              href: 'https://docs.google.com/document/d/1A1-Q-1OMw3QODs1wT6eqfLTagcGmgzAJAjJihiO3T48/edit',
             },
           ],
         },

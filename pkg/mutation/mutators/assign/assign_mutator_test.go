@@ -8,11 +8,14 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/google/go-cmp/cmp"
-	mutationsunversioned "github.com/open-policy-agent/gatekeeper/apis/mutations/unversioned"
-	"github.com/open-policy-agent/gatekeeper/pkg/externaldata"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/match"
-	path "github.com/open-policy-agent/gatekeeper/pkg/mutation/path/tester"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
+	mutationsunversioned "github.com/open-policy-agent/gatekeeper/v3/apis/mutations/unversioned"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/externaldata"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/match"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators/core"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators/testhelpers"
+	path "github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/path/tester"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -774,7 +777,8 @@ func TestApplyTo(t *testing.T) {
 				Version: test.version,
 				Kind:    test.kind,
 			})
-			matches := mutator.Matches(&types.Mutable{Object: obj, Source: types.SourceTypeDefault})
+			matches, err := mutator.Matches(&types.Mutable{Object: obj, Source: types.SourceTypeDefault})
+			require.NoError(t, err)
 			if matches != test.matchExpected {
 				t.Errorf("Matches() = %t, expected %t", matches, test.matchExpected)
 			}
@@ -1069,4 +1073,34 @@ func nestedMapSlice(u map[string]interface{}, fields ...string) ([]map[string]in
 		out[i] = v
 	}
 	return out, nil
+}
+
+func Test_Assign_errors(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mut    *mutationsunversioned.Assign
+		errMsg string
+	}{
+		{
+			name:   "empty path",
+			mut:    &mutationsunversioned.Assign{},
+			errMsg: "empty path",
+		},
+		{
+			name: "name > 63",
+			mut: &mutationsunversioned.Assign{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: testhelpers.BigName(),
+				},
+			},
+			errMsg: core.ErrNameLength.Error(),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutator, err := MutatorForAssign(tt.mut)
+
+			require.ErrorContains(t, err, tt.errMsg)
+			require.Nil(t, mutator)
+		})
+	}
 }

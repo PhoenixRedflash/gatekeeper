@@ -348,7 +348,7 @@ func (v *SubSchema) validateSchema(currentSubSchema *SubSchema, currentNode inte
 		}
 	}
 
-	if currentSubSchema.dependencies != nil && len(currentSubSchema.dependencies) > 0 {
+	if len(currentSubSchema.dependencies) > 0 {
 		if currentNodeMap, ok := currentNode.(map[string]interface{}); ok {
 			for elementKey := range currentNodeMap {
 				if dependency, ok := currentSubSchema.dependencies[elementKey]; ok {
@@ -469,7 +469,7 @@ func (v *SubSchema) validateArray(currentSubSchema *SubSchema, value []interface
 			result.mergeErrors(validationResult)
 		}
 	} else {
-		if currentSubSchema.ItemsChildren != nil && len(currentSubSchema.ItemsChildren) > 0 {
+		if len(currentSubSchema.ItemsChildren) > 0 {
 
 			nbItems := len(currentSubSchema.ItemsChildren)
 
@@ -556,10 +556,10 @@ func (v *SubSchema) validateArray(currentSubSchema *SubSchema, value []interface
 			if validationResult.Valid() {
 				validatedOne = true
 				break
-			} else {
-				if bestValidationResult == nil || validationResult.score > bestValidationResult.score {
-					bestValidationResult = validationResult
-				}
+			}
+
+			if bestValidationResult == nil || validationResult.score > bestValidationResult.score {
+				bestValidationResult = validationResult
 			}
 		}
 		if !validatedOne {
@@ -716,7 +716,7 @@ func (v *SubSchema) validateString(currentSubSchema *SubSchema, value interface{
 
 	// minLength & maxLength:
 	if currentSubSchema.minLength != nil {
-		if utf8.RuneCount([]byte(stringValue)) < *currentSubSchema.minLength {
+		if utf8.RuneCountInString(stringValue) < *currentSubSchema.minLength {
 			result.addInternalError(
 				new(StringLengthGTEError),
 				context,
@@ -726,7 +726,7 @@ func (v *SubSchema) validateString(currentSubSchema *SubSchema, value interface{
 		}
 	}
 	if currentSubSchema.maxLength != nil {
-		if utf8.RuneCount([]byte(stringValue)) > *currentSubSchema.maxLength {
+		if utf8.RuneCountInString(stringValue) > *currentSubSchema.maxLength {
 			result.addInternalError(
 				new(StringLengthLTEError),
 				context,

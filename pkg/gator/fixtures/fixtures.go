@@ -158,6 +158,34 @@ spec:
         }
 `
 
+	TemplateRestrictCustomField = `
+kind: ConstraintTemplate
+apiVersion: templates.gatekeeper.sh/v1beta1
+metadata:
+  name: restrictedcustomfield
+spec:
+  crd:
+    spec:
+      names:
+        kind: RestrictedCustomField
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            expectedCustomField: 
+              type: boolean
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package restrictedcustomfield
+        violation[{"msg": msg}] {
+          got := input.review.object.spec.customField
+          expected := input.parameters.expectedCustomField
+          got == expected
+          msg := sprintf("foo object has restricted custom field value of %v", [expected])
+        }
+`
+
 	ConstraintAlwaysValidate = `
 kind: AlwaysValidate
 apiVersion: constraints.gatekeeper.sh/v1beta1
@@ -214,6 +242,32 @@ metadata:
   name: always-fail
 `
 
+	ConstraintGatorValidate = `
+kind: NeverValidate
+apiVersion: constraints.gatekeeper.sh/v1beta1
+metadata:
+  name: always-fail-gator
+spec:
+  enforcementAction: scoped
+  scopedEnforcementActions:
+  - enforcementPoints:
+    - name: gator.gatekeeper.sh
+    action: deny
+`
+
+	ConstraintAuditValidate = `
+kind: NeverValidate
+apiVersion: constraints.gatekeeper.sh/v1beta1
+metadata:
+  name: always-pass-gator
+spec:
+  enforcementAction: scoped
+  scopedEnforcementActions:
+  - enforcementPoints:
+    - name: audit.gatekeeper.sh
+    action: deny
+`
+
 	ConstraintNeverValidateTwice = `
 kind: NeverValidateTwice
 apiVersion: constraints.gatekeeper.sh/v1beta1
@@ -234,6 +288,22 @@ kind: Other
 apiVersion: constraints.gatekeeper.sh/v1beta1
 metadata:
   name: other
+`
+
+	ConstraintRestrictCustomField = `
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: RestrictedCustomField
+metadata:
+  name: restrict-foo-custom-field
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Foo"]
+    namespaces:
+      - "default"
+  parameters:
+    expectedCustomField: true
 `
 
 	Object = `
@@ -302,6 +372,17 @@ apiVersion: group.sh/v1
 metadata:
   name: object`
 
+	ObjectFooTemplate = `
+apiVersion: apps/v1
+kind: FooTemplate
+metadata:
+  name: foo-template
+spec:
+  template:
+    spec:
+      customField: true
+`
+
 	NamespaceSelected = `
 kind: Namespace
 apiVersion: /v1
@@ -326,6 +407,16 @@ metadata:
   name: k8suniqueserviceselector
   annotations:
     description: Requires Services to have unique selectors within a namespace.
+    metadata.gatekeeper.sh/requires-sync-data: |
+      "[
+        [
+          {
+            "groups": [""],
+            "versions": ["v1"],
+            "kinds": ["Service"]
+          }
+        ]
+      ]"
 spec:
   crd:
     spec:
@@ -366,6 +457,70 @@ spec:
           input_selector == other_selector
           msg := sprintf("same selector as service <%v> in namespace <%v>", [name, namespace])
         }
+`
+
+	TemplateReferentialMultEquivSets = `
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8suniqueingresshost
+  annotations:
+    metadata.gatekeeper.sh/title: "Unique Ingress Host"
+    metadata.gatekeeper.sh/version: 1.0.3
+    metadata.gatekeeper.sh/requires-sync-data: |
+      "[
+        [
+          {
+            "groups": ["extensions"],
+            "versions": ["v1beta1"],
+            "kinds": ["Ingress"]
+          },
+          {
+            "groups": ["networking.k8s.io"],
+            "versions": ["v1beta1", "v1"],
+            "kinds": ["Ingress"]
+          }
+        ]
+      ]"
+`
+
+	TemplateReferentialMultReqs = `
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8suniqueingresshostmultireq
+  annotations:
+    metadata.gatekeeper.sh/title: "Unique Ingress Host"
+    metadata.gatekeeper.sh/version: 1.0.3
+    metadata.gatekeeper.sh/requires-sync-data: |
+      "[
+        [
+          {
+            "groups": [""],
+            "versions": ["v1"],
+            "kinds": ["Pod"]
+          }
+        ],
+        [
+          {
+            "groups": ["networking.k8s.io"],
+            "versions": ["v1beta1", "v1"],
+            "kinds": ["Ingress"]
+          }
+        ]
+      ]"
+`
+
+	TemplateReferentialBadAnnotation = `
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8suniqueingresshostbadannotation
+  annotations:
+    metadata.gatekeeper.sh/title: "Unique Ingress Host"
+    metadata.gatekeeper.sh/version: 1.0.3
+    metadata.gatekeeper.sh/requires-sync-data: |
+      "{}"
 `
 
 	ConstraintReferential = `
@@ -581,5 +736,22 @@ spec:
     kinds:
       - apiGroups: ["*"]
         kinds: ["*"]
+`
+
+	ExpansionRestrictCustomField = `
+apiVersion: expansion.gatekeeper.sh/v1alpha1
+kind: ExpansionTemplate
+metadata:
+  name: expand-foo
+spec:
+  applyTo:
+  - groups: [ "apps" ]
+    kinds: [ "FooTemplate" ]
+    versions: [ "v1" ]
+  templateSource: "spec.template"
+  generatedGVK:
+    kind: "Foo"
+    group: ""
+    version: "v1"
 `
 )

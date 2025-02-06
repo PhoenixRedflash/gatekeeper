@@ -33,7 +33,10 @@ module.exports = {
         'externaldata',
         'expansion',
         'gator',
-        'workload-resources'
+        'workload-resources',
+        'pubsub',
+        'validating-admission-policy',
+        'enforcement-points'
       ],
     },
     {
@@ -42,8 +45,18 @@ module.exports = {
       collapsed: false,
       items: [
         'operations',
-        'performance-tuning'
+        'performance-tuning',
+        'opa-versions'
       ],
+    },
+    {
+      type: 'category',
+      label: 'Concepts',
+      collapsed: false,
+      items: [
+        'input',
+        'mutation-background'
+      ]
     },
     {
       type: 'category',
@@ -52,7 +65,8 @@ module.exports = {
       items: [
         'developers',
         'help',
-        'security'
+        'security',
+        'pubsub-driver'
       ],
     }
   ]

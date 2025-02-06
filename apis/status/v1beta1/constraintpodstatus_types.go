@@ -18,8 +18,8 @@ package v1beta1
 import (
 	"strings"
 
-	"github.com/open-policy-agent/gatekeeper/pkg/operations"
-	"github.com/open-policy-agent/gatekeeper/pkg/util"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/operations"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -39,18 +39,27 @@ type ConstraintPodStatusStatus struct {
 	// Storing the constraint UID allows us to detect drift, such as
 	// when a constraint has been recreated after its CRD was deleted
 	// out from under it, interrupting the watch
-	ConstraintUID      types.UID `json:"constraintUID,omitempty"`
-	Operations         []string  `json:"operations,omitempty"`
-	Enforced           bool      `json:"enforced,omitempty"`
-	Errors             []Error   `json:"errors,omitempty"`
-	ObservedGeneration int64     `json:"observedGeneration,omitempty"`
+	ConstraintUID           types.UID                `json:"constraintUID,omitempty"`
+	Operations              []string                 `json:"operations,omitempty"`
+	Enforced                bool                     `json:"enforced,omitempty"`
+	Errors                  []Error                  `json:"errors,omitempty"`
+	ObservedGeneration      int64                    `json:"observedGeneration,omitempty"`
+	EnforcementPointsStatus []EnforcementPointStatus `json:"enforcementPointsStatus,omitempty"`
 }
 
-// Error represents a single error caught while adding a constraint to OPA.
+// Error represents a single error caught while adding a constraint to engine.
 type Error struct {
 	Code     string `json:"code"`
 	Message  string `json:"message"`
 	Location string `json:"location,omitempty"`
+}
+
+// EnforcementPointStatus represents the status of a single enforcement point.
+type EnforcementPointStatus struct {
+	EnforcementPoint   string `json:"enforcementPoint"`
+	State              string `json:"state"`
+	Message            string `json:"message,omitempty"`
+	ObservedGeneration int64  `json:"observedGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -113,5 +122,5 @@ func KeyForConstraint(id string, constraint *unstructured.Unstructured) (string,
 	// because K8s requires all lowercase letters for resource names
 	kind := strings.ToLower(constraint.GetObjectKind().GroupVersionKind().Kind)
 	name := constraint.GetName()
-	return dashPacker(id, kind, name)
+	return DashPacker(id, kind, name)
 }

@@ -11,14 +11,14 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	mutationsv1 "github.com/open-policy-agent/gatekeeper/apis/mutations/v1"
-	statusv1beta1 "github.com/open-policy-agent/gatekeeper/apis/status/v1beta1"
-	"github.com/open-policy-agent/gatekeeper/pkg/controller/mutators"
-	"github.com/open-policy-agent/gatekeeper/pkg/fakes"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/path/parser"
-	mutationschema "github.com/open-policy-agent/gatekeeper/pkg/mutation/schema"
-	mutationtypes "github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
+	mutationsv1 "github.com/open-policy-agent/gatekeeper/v3/apis/mutations/v1"
+	statusv1beta1 "github.com/open-policy-agent/gatekeeper/v3/apis/status/v1beta1"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller/mutators"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/fakes"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/path/parser"
+	mutationschema "github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/schema"
+	mutationtypes "github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -198,7 +198,7 @@ func (m *fakeMutatorObject) DeepCopyObject() runtime.Object {
 
 	err := m.err
 	if err != nil {
-		err = fmt.Errorf(err.Error())
+		err = fmt.Errorf("%w", err)
 	}
 
 	return &fakeMutatorObject{
@@ -308,7 +308,7 @@ func newFakeReconciler(t *testing.T, c client.Client, events chan event.GenericE
 			return fake.mutator, nil
 		},
 		system: mutation.NewSystem(mutation.SystemOpts{}),
-		getPod: func(ctx context.Context) (*corev1.Pod, error) {
+		getPod: func(_ context.Context) (*corev1.Pod, error) {
 			return fakes.Pod(
 				fakes.WithNamespace("gatekeeper-system"),
 				fakes.WithName(podName),
@@ -402,7 +402,7 @@ func TestReconciler_Reconcile(t *testing.T) {
 				},
 				Status: statusv1beta1.MutatorPodStatusStatus{
 					ID:         "no-pod",
-					Operations: []string{"audit", "mutation-status", "mutation-webhook", "status", "webhook"},
+					Operations: []string{"audit", "generate", "mutation-controller", "mutation-status", "mutation-webhook", "status", "webhook"},
 					Enforced:   true,
 					Errors:     nil,
 				},
@@ -434,7 +434,7 @@ func TestReconciler_Reconcile(t *testing.T) {
 				},
 				Status: statusv1beta1.MutatorPodStatusStatus{
 					ID:         "no-pod",
-					Operations: []string{"audit", "mutation-status", "mutation-webhook", "status", "webhook"},
+					Operations: []string{"audit", "generate", "mutation-controller", "mutation-status", "mutation-webhook", "status", "webhook"},
 					Enforced:   true,
 					Errors:     nil,
 				},
@@ -494,7 +494,7 @@ func TestReconciler_Reconcile(t *testing.T) {
 				},
 				Status: statusv1beta1.MutatorPodStatusStatus{
 					ID:         "no-pod",
-					Operations: []string{"audit", "mutation-status", "mutation-webhook", "status", "webhook"},
+					Operations: []string{"audit", "generate", "mutation-controller", "mutation-status", "mutation-webhook", "status", "webhook"},
 					Enforced:   false,
 					Errors:     []statusv1beta1.MutatorError{{Message: newErrSome(1).Error()}},
 				},
@@ -535,7 +535,7 @@ func TestReconciler_Reconcile(t *testing.T) {
 				},
 				Status: statusv1beta1.MutatorPodStatusStatus{
 					ID:         "no-pod",
-					Operations: []string{"audit", "mutation-status", "mutation-webhook", "status", "webhook"},
+					Operations: []string{"audit", "generate", "mutation-controller", "mutation-status", "mutation-webhook", "status", "webhook"},
 					Enforced:   false,
 					Errors: []statusv1beta1.MutatorError{
 						{
@@ -634,7 +634,7 @@ func TestReconciler_Reconcile(t *testing.T) {
 				},
 				Status: statusv1beta1.MutatorPodStatusStatus{
 					ID:         "no-pod",
-					Operations: []string{"audit", "mutation-status", "mutation-webhook", "status", "webhook"},
+					Operations: []string{"audit", "generate", "mutation-controller", "mutation-status", "mutation-webhook", "status", "webhook"},
 					Enforced:   false,
 					Errors: []statusv1beta1.MutatorError{
 						{
@@ -685,7 +685,7 @@ func TestReconciler_Reconcile(t *testing.T) {
 				},
 				Status: statusv1beta1.MutatorPodStatusStatus{
 					ID:         "no-pod",
-					Operations: []string{"audit", "mutation-status", "mutation-webhook", "status", "webhook"},
+					Operations: []string{"audit", "generate", "mutation-controller", "mutation-status", "mutation-webhook", "status", "webhook"},
 					Enforced:   true,
 					Errors:     nil,
 				},
@@ -940,7 +940,7 @@ func TestReconciler_Reconcile_DeletePodStatus(t *testing.T) {
 		},
 		Status: statusv1beta1.MutatorPodStatusStatus{
 			ID:         "no-pod",
-			Operations: []string{"audit", "mutation-status", "mutation-webhook", "status", "webhook"},
+			Operations: []string{"audit", "generate", "mutation-controller", "mutation-status", "mutation-webhook", "status", "webhook"},
 			Enforced:   true,
 		},
 	}
@@ -1041,7 +1041,7 @@ func TestReconcile_ReconcileUpsert_GetPodError(t *testing.T) {
 
 	ctx := context.Background()
 
-	r.getPod = func(ctx context.Context) (*corev1.Pod, error) {
+	r.getPod = func(_ context.Context) (*corev1.Pod, error) {
 		return nil, newErrSome(1)
 	}
 
@@ -1071,7 +1071,7 @@ func TestReconcile_ReconcileDeleted_GetPodError(t *testing.T) {
 
 	ctx := context.Background()
 
-	r.getPod = func(ctx context.Context) (*corev1.Pod, error) {
+	r.getPod = func(_ context.Context) (*corev1.Pod, error) {
 		return nil, newErrSome(1)
 	}
 

@@ -1,14 +1,13 @@
 package v1beta1_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/open-policy-agent/gatekeeper/apis/status/v1beta1"
-	"github.com/open-policy-agent/gatekeeper/pkg/fakes"
-	"github.com/open-policy-agent/gatekeeper/pkg/operations"
-	"github.com/open-policy-agent/gatekeeper/test/testutils"
+	"github.com/open-policy-agent/gatekeeper/v3/apis/status/v1beta1"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/fakes"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/operations"
+	"github.com/open-policy-agent/gatekeeper/v3/test/testutils"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -53,7 +52,7 @@ func TestNewConstraintStatusForPod(t *testing.T) {
 			v1beta1.ConstraintNameLabel:         "a-constraint",
 			v1beta1.ConstraintKindLabel:         "AConstraintKind",
 			v1beta1.PodLabel:                    podName,
-			v1beta1.ConstraintTemplateNameLabel: strings.ToLower(cstrKind),
+			v1beta1.ConstraintTemplateNameLabel: "aconstraintkind",
 		})
 
 	err = controllerutil.SetOwnerReference(pod, wantStatus, scheme)

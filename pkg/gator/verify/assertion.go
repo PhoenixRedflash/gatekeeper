@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	"github.com/open-policy-agent/frameworks/constraint/pkg/types"
-	"github.com/open-policy-agent/gatekeeper/pkg/gator"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/gator"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
@@ -150,7 +150,7 @@ func (a *Assertion) getMsgRegex() (*regexp.Regexp, error) {
 		a.msgRegex, err = regexp.Compile(*a.Message)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", gator.ErrInvalidRegex, err)
+		return nil, fmt.Errorf("%w: %w", gator.ErrInvalidRegex, err)
 	}
 
 	return a.msgRegex, nil

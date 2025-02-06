@@ -4,14 +4,14 @@ import (
 	"fmt"
 
 	"github.com/google/go-cmp/cmp"
-	mutationsunversioned "github.com/open-policy-agent/gatekeeper/apis/mutations/unversioned"
-	mutationsv1beta1 "github.com/open-policy-agent/gatekeeper/apis/mutations/v1beta1"
-	"github.com/open-policy-agent/gatekeeper/pkg/logging"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/mutators/core"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/path/parser"
-	patht "github.com/open-policy-agent/gatekeeper/pkg/mutation/path/tester"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/schema"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
+	mutationsunversioned "github.com/open-policy-agent/gatekeeper/v3/apis/mutations/unversioned"
+	mutationsv1beta1 "github.com/open-policy-agent/gatekeeper/v3/apis/mutations/v1beta1"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/logging"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators/core"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/path/parser"
+	patht "github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/path/tester"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/schema"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	runtimeschema "k8s.io/apimachinery/pkg/runtime/schema"
@@ -36,12 +36,12 @@ type Mutator struct {
 // Mutator implements mutatorWithSchema.
 var _ schema.MutatorWithSchema = &Mutator{}
 
-func (m *Mutator) Matches(mutable *types.Mutable) bool {
+func (m *Mutator) Matches(mutable *types.Mutable) (bool, error) {
 	res, err := core.MatchWithApplyTo(mutable, m.modifySet.Spec.ApplyTo, &m.modifySet.Spec.Match)
 	if err != nil {
 		log.Error(err, "Matches failed for modify set", "modifyset", m.modifySet.Name)
 	}
-	return res
+	return res, err
 }
 
 func (m *Mutator) TerminalType() parser.NodeType {
@@ -126,6 +126,10 @@ func (m *Mutator) String() string {
 // MutatorForModifySet returns an Mutator built from
 // the given modifyset instance.
 func MutatorForModifySet(modifySet *mutationsunversioned.ModifySet) (*Mutator, error) {
+	if err := core.ValidateName(modifySet.Name); err != nil {
+		return nil, err
+	}
+
 	// This is not always set by the kubernetes API server
 	modifySet.SetGroupVersionKind(runtimeschema.GroupVersionKind{Group: mutationsv1beta1.GroupVersion.Group, Kind: "ModifySet"})
 
@@ -138,7 +142,7 @@ func MutatorForModifySet(modifySet *mutationsunversioned.ModifySet) (*Mutator, e
 		return nil, fmt.Errorf("modifyset %s can't change metadata", modifySet.GetName())
 	}
 
-	if path.Nodes[len(path.Nodes)-1].Type() == parser.ListNode {
+	if len(path.Nodes) > 0 && path.Nodes[len(path.Nodes)-1].Type() == parser.ListNode {
 		return nil, fmt.Errorf("final node in a modifyset location cannot be a keyed list")
 	}
 

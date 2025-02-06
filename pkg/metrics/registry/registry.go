@@ -9,9 +9,9 @@ import (
 	"strings"
 
 	// register exporters with the registry.
-	"github.com/open-policy-agent/gatekeeper/pkg/metrics/exporters/opencensus"
-	"github.com/open-policy-agent/gatekeeper/pkg/metrics/exporters/prometheus"
-	"github.com/open-policy-agent/gatekeeper/pkg/metrics/exporters/stackdriver"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/metrics/exporters/opentelemetry"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/metrics/exporters/prometheus"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/metrics/exporters/stackdriver"
 )
 
 func init() {
@@ -27,9 +27,9 @@ type Exporter interface {
 
 var exporters = newExporterSet(
 	map[string]StartExporter{
-		opencensus.Name:  opencensus.Start,
-		prometheus.Name:  prometheus.Start,
-		stackdriver.Name: stackdriver.Start,
+		opentelemetry.Name: opentelemetry.Start,
+		prometheus.Name:    prometheus.Start,
+		stackdriver.Name:   stackdriver.Start,
 	},
 )
 
@@ -60,7 +60,7 @@ func newExporterSet(exporters map[string]StartExporter) *exporterSet {
 func (es *exporterSet) String() string {
 	contents := make([]string, 0)
 	for k := range es.assignedExporters {
-		contents = append(contents, string(k))
+		contents = append(contents, k)
 	}
 	return fmt.Sprintf("%s", contents)
 }
@@ -69,16 +69,16 @@ func (es *exporterSet) Set(s string) error {
 	splt := strings.Split(s, ",")
 	for _, v := range splt {
 		lower := strings.ToLower(v)
-		new, ok := es.registeredExporters[lower]
+		newExporter, ok := es.registeredExporters[lower]
 		if !ok {
 			return fmt.Errorf("exporter %s is not a valid exporter: %v", v, es.validExporters)
 		}
-		es.assignedExporters[lower] = new
+		es.assignedExporters[lower] = newExporter
 	}
 	return nil
 }
 
-func (es *exporterSet) MustRegister(name string, new StartExporter) {
+func (es *exporterSet) MustRegister(name string, new StartExporter) { // nolint:revive
 	if _, ok := es.registeredExporters[name]; ok {
 		panic(fmt.Sprintf("exporter %v registered twice", name))
 	}

@@ -22,17 +22,23 @@ import (
 )
 
 type trackerMap struct {
-	mu      sync.RWMutex
-	m       map[schema.GroupVersionKind]*objectTracker
-	removed map[schema.GroupVersionKind]struct{}
-	fn      objDataFactory
+	mu          sync.RWMutex
+	m           map[schema.GroupVersionKind]*objectTracker
+	removed     map[schema.GroupVersionKind]struct{}
+	tryCanceled map[schema.GroupVersionKind]objData
+	fn          objDataFactory
 }
 
 func newTrackerMap(fn objDataFactory) *trackerMap {
+	if fn == nil {
+		fn = objDataFromFlags
+	}
+
 	return &trackerMap{
-		m:       make(map[schema.GroupVersionKind]*objectTracker),
-		removed: make(map[schema.GroupVersionKind]struct{}),
-		fn:      fn,
+		m:           make(map[schema.GroupVersionKind]*objectTracker),
+		removed:     make(map[schema.GroupVersionKind]struct{}),
+		tryCanceled: make(map[schema.GroupVersionKind]objData),
+		fn:          fn,
 	}
 }
 
@@ -66,6 +72,10 @@ func (t *trackerMap) Get(gvk schema.GroupVersionKind) Expectations {
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// re-retrieve map entry in case it was added after releasing the read lock.
+	if e, ok := t.m[gvk]; ok {
+		return e
+	}
 	entry := newObjTracker(gvk, t.fn)
 	t.m[gvk] = entry
 	return entry
@@ -87,7 +97,14 @@ func (t *trackerMap) Keys() []schema.GroupVersionKind {
 func (t *trackerMap) Remove(gvk schema.GroupVersionKind) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	t.removeNoLock(gvk)
+}
+
+func (t *trackerMap) removeNoLock(gvk schema.GroupVersionKind) {
 	delete(t.m, gvk)
+	delete(t.tryCanceled, gvk)
+
 	t.removed[gvk] = struct{}{}
 }
 
@@ -113,4 +130,27 @@ func (t *trackerMap) Populated() bool {
 		}
 	}
 	return true
+}
+
+// TryCancel will check the readinessRetries left on this GVK, and remove
+// the expectation for its objectTracker if no retries remain.
+// Returns True if it stopped tracking a resource kind.
+func (t *trackerMap) TryCancel(g schema.GroupVersionKind) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	obj, ok := t.tryCanceled[g]
+	if !ok {
+		// need to create a record of this TryCancel call
+		obj = t.fn()
+	}
+
+	shouldDel := obj.decrementRetries()
+	t.tryCanceled[g] = obj // set the changed obj back to the map, as the value is not a pointer
+
+	if shouldDel {
+		t.removeNoLock(g)
+	}
+
+	return shouldDel
 }

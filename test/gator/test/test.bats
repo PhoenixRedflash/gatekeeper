@@ -46,6 +46,11 @@ match_yaml_msg () {
 # END OF HELPER FUNCTIONS
 ####################################################################################################
 
+@test "gator test doesn't wait on stdin input" {
+  # this should fail with "no input data identified"
+  ! bin/gator test
+}
+
 @test "manifest with no violations piped to stdin returns 0 exit status" {
   bin/gator test < "$BATS_TEST_DIRNAME/fixtures/manifests/with-policies/no-violations.yaml"
   if [ "$?" -ne 0 ]; then
@@ -54,8 +59,18 @@ match_yaml_msg () {
   fi
 }
 
-@test "manifest with violations piped to stdin returns 1 exit status" {
+@test "manifest with violations redirected to stdin returns 1 exit status" {
   ! bin/gator test < "$BATS_TEST_DIRNAME/fixtures/manifests/with-policies/with-violations.yaml"
+}
+
+@test "manifest with violations piped to stdin returns 1 exit status" {
+  # first test that we fail the command
+  ! cat "$BATS_TEST_DIRNAME/fixtures/manifests/with-policies/with-violations.yaml" | bin/gator test
+
+  output=$(! cat "$BATS_TEST_DIRNAME/fixtures/manifests/with-policies/with-violations.yaml" | bin/gator test)
+
+  # now test that the failure reason is a violation
+  match_substring "${output[*]}" "Container <tomcat> in your <Pod> <test-pod1> has no <readinessProbe>"
 }
 
 @test "manifest with no violations included as flag returns 0 exit status" {
@@ -229,4 +244,42 @@ match_yaml_msg () {
   [ "$status" -eq 1 ]
   want_msg="you must provide labels: {\"geo\"}"
   match_yaml_msg "${output[*]}" "${want_msg}"
+}
+
+@test "observe open api v3 defaults being applied" {
+  run bin/gator test \
+    -f="$BATS_TEST_DIRNAME/fixtures/manifests/with-policies/with-violations-and-defaults.yaml" \
+    -o=yaml
+
+  [ "$status" -eq 1 ]
+
+  # these are defined in the template's default fields for the parameters
+  want_msg_1="aRequiredLabel" 
+  want_msg_2="aRequiredMessage"
+
+  match_substring "${output[*]}" "${want_msg_1}"
+  match_substring "${output[*]}" "${want_msg_2}"
+}
+
+@test "expansion with namespace selector" {
+  # First run without the namespace and expect an err
+  run bin/gator test \
+    -f="$BATS_TEST_DIRNAME/fixtures/manifests/expansion/expansion-w-ns-selector.yaml" \
+    -o=yaml
+
+  [ "$status" -eq 1 ]
+
+  want_msg="Implied by expand-deployments] unable to match constraints: error matching the requested object: nginx-deployment-pod :failed to run Match criteria: namespace selector for namespace-scoped object but missing Namespace"
+  match_substring "${output[*]}" "${want_msg}"
+
+  # Now expect a violation
+  run bin/gator test \
+    -f="$BATS_TEST_DIRNAME/fixtures/manifests/expansion/expansion-w-ns-selector.yaml" \
+    -f="$BATS_TEST_DIRNAME/fixtures/manifests/expansion/ns.yaml" \
+    -o=yaml
+
+  [ "$status" -eq 1 ]
+
+  want_msg="[Implied by expand-deployments] All pods must have an \`owner\` label that points to your company username" 
+  match_substring "${output[*]}" "${want_msg}"
 }

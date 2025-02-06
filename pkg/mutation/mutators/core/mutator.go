@@ -5,16 +5,16 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/open-policy-agent/gatekeeper/apis/mutations/unversioned"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/match"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/path/parser"
-	patht "github.com/open-policy-agent/gatekeeper/pkg/mutation/path/tester"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/apis/mutations/unversioned"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/match"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/path/parser"
+	patht "github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/path/tester"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// NewTester returns a patht.Tester for the given object name, kind path and
+// NewTester returns a path.Tester for the given object name, kind path and
 // pathtests.
 func NewTester(name string, kind string, path parser.Path, ptests []unversioned.PathTest) (*patht.Tester, error) {
 	pathTests, err := gatherPathTests(name, kind, ptests)
@@ -140,4 +140,12 @@ func MatchWithApplyTo(mut *types.Mutable, applies []match.ApplyTo, mat *match.Ma
 	}
 
 	return matches, nil
+}
+
+func ValidateName(name string) error {
+	if len(name) > 63 {
+		return ErrNameLength
+	}
+
+	return nil
 }

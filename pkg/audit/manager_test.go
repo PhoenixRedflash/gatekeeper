@@ -1,15 +1,199 @@
 package audit
 
 import (
+	"container/heap"
+	"context"
 	"os"
 	"reflect"
 	"testing"
 
+	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/rego"
+	configv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/config/v1alpha1"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller/config/process"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/fakes"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/target"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/wildcard"
 	"github.com/pkg/errors"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
+
+func Test_SVQueue(t *testing.T) {
+	sv1 := &StatusViolation{
+		Group:   "rbac.authorization.k8s.io",
+		Version: "v1",
+		Kind:    "ClusterRoleBinding",
+	}
+	sv2 := &StatusViolation{
+		Group:   "authorization.k8s.io",
+		Version: "v1",
+		Kind:    "SubjectAccessReview",
+	}
+	sv3 := &StatusViolation{
+		Group:   "rbac.authorization.k8s.io",
+		Version: "v1",
+		Kind:    "RoleBinding",
+	}
+
+	svq := make(SVQueue, 0, 3)
+	heap.Init(&svq)
+	// Push into queue in unordered fashion, expect length to be correct, and pop in sort order.
+	heap.Push(&svq, sv1)
+	heap.Push(&svq, sv2)
+	heap.Push(&svq, sv3)
+	require.EqualValues(t, svq.Len(), 3)
+	require.EqualValues(t, heap.Pop(&svq), sv3)
+	require.EqualValues(t, heap.Pop(&svq), sv1)
+	require.EqualValues(t, heap.Pop(&svq), sv2)
+	require.EqualValues(t, svq.Len(), 0)
+}
+
+func Test_LimitQueue(t *testing.T) {
+	sv1 := &StatusViolation{
+		Group:   "rbac.authorization.k8s.io",
+		Version: "v1",
+		Kind:    "ClusterRoleBinding",
+	}
+	sv2 := &StatusViolation{
+		Group:   "authorization.k8s.io",
+		Version: "v1",
+		Kind:    "SubjectAccessReview",
+	}
+	sv3 := &StatusViolation{
+		Group:   "rbac.authorization.k8s.io",
+		Version: "v1",
+		Kind:    "RoleBinding",
+	}
+
+	lq := newLimitQueue(2)
+	// Push into queue in unordered fashion, expect length to stay <= 2, peek the max object, and pop in sort order.
+	lq.Push(sv1)
+	lq.Push(sv2)
+	lq.Push(sv3)
+	require.EqualValues(t, lq.Len(), 2)
+	require.EqualValues(t, lq.Peek(), sv1)
+	require.EqualValues(t, lq.Pop(), sv1)
+	require.EqualValues(t, lq.Pop(), sv2)
+	require.EqualValues(t, lq.Len(), 0)
+	// Ensure that Peek does not add a nil element if the queue is empty.
+	lq.Peek()
+	require.EqualValues(t, lq.Len(), 0)
+	// Ensure that Pop is nil if the queue is empty.
+	require.EqualValues(t, lq.Pop(), &StatusViolation{})
+}
+
+func Test_auditFromCache(t *testing.T) {
+	podToReview := fakes.Pod(fakes.WithNamespace("test-namespace-1"))
+	podGVK := podToReview.GroupVersionKind()
+	testAuditCache := fakeCacheListerFor([]schema.GroupVersionKind{podGVK}, []client.Object{podToReview})
+
+	driver, err := rego.New()
+	require.NoError(t, err)
+	client, err := constraintclient.NewClient(constraintclient.Targets(&target.K8sValidationTarget{}), constraintclient.Driver(driver), constraintclient.EnforcementPoints([]string{util.AuditEnforcementPoint}...))
+	require.NoError(t, err)
+
+	_, err = client.AddTemplate(context.Background(), fakes.DenyAllRegoTemplate())
+	require.NoError(t, err, "adding denyall constraint template")
+
+	tests := []struct {
+		name            string
+		processExcluder *process.Excluder
+		constraint      *unstructured.Unstructured
+		wantViolation   bool
+	}{
+		{
+			name:            "obj excluded from audit",
+			processExcluder: processExcluderFor([]string{"test-namespace-1"}),
+			constraint:      fakes.DenyAllConstraint(),
+		},
+		{
+			name:            "obj not excluded from audit",
+			processExcluder: processExcluderFor([]string{}),
+			constraint:      fakes.DenyAllConstraint(),
+			wantViolation:   true,
+		},
+		{
+			name:            "audit excluded from constraint",
+			processExcluder: processExcluderFor([]string{}),
+			constraint:      fakes.ScopedConstraintFor(util.WebhookEnforcementPoint),
+		},
+		{
+			name:            "audit included in constraints",
+			processExcluder: processExcluderFor([]string{}),
+			constraint:      fakes.ScopedConstraintFor(util.AuditEnforcementPoint),
+			wantViolation:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err = client.AddConstraint(context.Background(), tc.constraint)
+			require.NoError(t, err, "adding denyall constraint")
+
+			am := &Manager{
+				processExcluder: tc.processExcluder,
+				auditCache:      testAuditCache,
+				opa:             client,
+			}
+
+			results, errs := am.auditFromCache(context.Background())
+			require.Len(t, errs, 0)
+
+			if tc.wantViolation {
+				require.Len(t, results, 1)
+			} else {
+				require.Len(t, results, 0)
+			}
+
+			if _, err := client.RemoveConstraint(context.Background(), tc.constraint); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func fakeCacheListerFor(gvks []schema.GroupVersionKind, objsToList []client.Object) *CacheLister {
+	k8sclient := fake.NewClientBuilder().WithObjects(objsToList...).Build()
+	fakeLister := fakeWatchIterator{gvksToList: gvks}
+
+	return NewAuditCacheLister(k8sclient, &fakeLister)
+}
+
+type fakeWatchIterator struct {
+	gvksToList []schema.GroupVersionKind
+}
+
+func (f *fakeWatchIterator) DoForEach(listFunc func(gvk schema.GroupVersionKind) error) error {
+	for _, gvk := range f.gvksToList {
+		if err := listFunc(gvk); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func processExcluderFor(ns []string) *process.Excluder {
+	processExcluder := process.New()
+	for _, n := range ns {
+		processExcluder.Add([]configv1alpha1.MatchEntry{
+			{
+				ExcludedNamespaces: []wildcard.Wildcard{wildcard.Wildcard(n)},
+				Processes:          []string{"audit"},
+			},
+		})
+	}
+
+	return processExcluder
+}
 
 func Test_newNSCache(t *testing.T) {
 	tests := []struct {
@@ -187,9 +371,12 @@ func Test_getViolationRef(t *testing.T) {
 		rkind       string
 		rname       string
 		rnamespace  string
+		rrv         string
 		ckind       string
 		cname       string
 		cnamespace  string
+		ruid        types.UID
+		einvolved   bool
 	}
 	tests := []struct {
 		name string
@@ -197,7 +384,7 @@ func Test_getViolationRef(t *testing.T) {
 		want *corev1.ObjectReference
 	}{
 		{
-			name: "Test case 1",
+			name: "Test case 1 - Gatekeeper Namespace",
 			args: args{
 				gkNamespace: "default",
 				rkind:       "Pod",
@@ -206,6 +393,7 @@ func Test_getViolationRef(t *testing.T) {
 				ckind:       "LimitRange",
 				cname:       "my-limit-range",
 				cnamespace:  "default",
+				einvolved:   false,
 			},
 			want: &corev1.ObjectReference{
 				Kind:      "Pod",
@@ -215,7 +403,7 @@ func Test_getViolationRef(t *testing.T) {
 			},
 		},
 		{
-			name: "Test case 2",
+			name: "Test case 2 - GK Namespace",
 			args: args{
 				gkNamespace: "kube-system",
 				rkind:       "Service",
@@ -224,6 +412,7 @@ func Test_getViolationRef(t *testing.T) {
 				ckind:       "PodSecurityPolicy",
 				cname:       "my-pod-security-policy",
 				cnamespace:  "kube-system",
+				einvolved:   false,
 			},
 			want: &corev1.ObjectReference{
 				Kind:      "Service",
@@ -232,10 +421,75 @@ func Test_getViolationRef(t *testing.T) {
 				Namespace: "kube-system",
 			},
 		},
+		{
+			name: "Test case 3 - Involved Namespace",
+			args: args{
+				gkNamespace: "kube-system",
+				rkind:       "Pod",
+				rname:       "my-pod",
+				rrv:         "123456",
+				ruid:        "abcde-123456",
+				rnamespace:  "default",
+				ckind:       "LimitRange",
+				cname:       "my-limit-range",
+				cnamespace:  "default",
+				einvolved:   true,
+			},
+			want: &corev1.ObjectReference{
+				Kind:            "Pod",
+				Name:            "my-pod",
+				Namespace:       "default",
+				ResourceVersion: "123456",
+				UID:             "abcde-123456",
+			},
+		},
+		{
+			name: "Test case 4 - Involved Namespace Cluster Scoped",
+			args: args{
+				gkNamespace: "kube-system",
+				rkind:       "Service",
+				rname:       "my-service",
+				rrv:         "123456",
+				ruid:        "abcde-123456",
+				ckind:       "PodSecurityPolicy",
+				cname:       "my-pod-security-policy",
+				cnamespace:  "kube-system",
+				einvolved:   true,
+			},
+			want: &corev1.ObjectReference{
+				Kind:            "Service",
+				Name:            "my-service",
+				Namespace:       "kube-system",
+				ResourceVersion: "123456",
+				UID:             "abcde-123456",
+			},
+		},
+		{
+			name: "Test case 5 - Involved Namespace RV/UID",
+			args: args{
+				gkNamespace: "kube-system",
+				rkind:       "Service",
+				rname:       "my-service",
+				rrv:         "",
+				ruid:        "",
+				rnamespace:  "default",
+				ckind:       "PodSecurityPolicy",
+				cname:       "my-pod-security-policy",
+				cnamespace:  "kube-system",
+				einvolved:   true,
+			},
+			want: &corev1.ObjectReference{
+				Kind:            "Service",
+				Name:            "my-service",
+				Namespace:       "default",
+				ResourceVersion: "",
+				UID:             "",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := getViolationRef(tt.args.gkNamespace, tt.args.rkind, tt.args.rname, tt.args.rnamespace, tt.args.ckind, tt.args.cname, tt.args.cnamespace); !reflect.DeepEqual(got, tt.want) {
+			if got := getViolationRef(tt.args.gkNamespace, tt.args.rkind, tt.args.rname, tt.args.rnamespace, tt.args.rrv, tt.args.ruid, tt.args.ckind, tt.args.cname, tt.args.cnamespace, tt.args.einvolved); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("getViolationRef() = %v, want %v", got, tt.want)
 			}
 		})

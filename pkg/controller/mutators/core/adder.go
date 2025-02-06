@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"strings"
 
-	statusv1beta1 "github.com/open-policy-agent/gatekeeper/apis/status/v1beta1"
-	"github.com/open-policy-agent/gatekeeper/pkg/controller/mutatorstatus"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
-	"github.com/open-policy-agent/gatekeeper/pkg/readiness"
+	statusv1beta1 "github.com/open-policy-agent/gatekeeper/v3/apis/status/v1beta1"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller/mutatorstatus"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness"
 	corev1 "k8s.io/api/core/v1"
 	apitypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -67,24 +67,24 @@ func (a *Adder) add(mgr manager.Manager, r *Reconciler) error {
 
 	// Watch for changes to Mutators.
 	err = c.Watch(
-		&source.Kind{Type: r.newMutationObj()},
-		&handler.EnqueueRequestForObject{})
+		source.Kind(mgr.GetCache(), r.newMutationObj(),
+			&handler.EnqueueRequestForObject{}))
 	if err != nil {
 		return err
 	}
 
 	// Watch for changes to MutatorPodStatuses.
 	err = c.Watch(
-		&source.Kind{Type: &statusv1beta1.MutatorPodStatus{}},
-		handler.EnqueueRequestsFromMapFunc(mutatorstatus.PodStatusToMutatorMapper(true, r.gvk.Kind, func(obj client.Object) []reconcile.Request {
-			return []reconcile.Request{{
-				NamespacedName: apitypes.NamespacedName{
-					Namespace: obj.GetNamespace(),
-					Name:      obj.GetName(),
-				},
-			}}
-		})),
-	)
+		source.Kind(mgr.GetCache(), &statusv1beta1.MutatorPodStatus{},
+			handler.TypedEnqueueRequestsFromMapFunc(mutatorstatus.PodStatusToMutatorMapper(true, r.gvk.Kind, func(_ context.Context, obj client.Object) []reconcile.Request {
+				return []reconcile.Request{{
+					NamespacedName: apitypes.NamespacedName{
+						Namespace: obj.GetNamespace(),
+						Name:      obj.GetName(),
+					},
+				}}
+			})),
+		))
 	if err != nil {
 		return err
 	}
@@ -92,18 +92,18 @@ func (a *Adder) add(mgr manager.Manager, r *Reconciler) error {
 	if a.EventsSource != nil {
 		// Watch for enqueued events.
 		err = c.Watch(
-			a.EventsSource,
-			handler.EnqueueRequestsFromMapFunc(func(obj client.Object) []reconcile.Request {
-				if obj.GetObjectKind().GroupVersionKind().Kind != r.gvk.Kind {
-					return nil
-				}
-				return []reconcile.Request{{
-					NamespacedName: apitypes.NamespacedName{
-						Namespace: obj.GetNamespace(),
-						Name:      obj.GetName(),
-					},
-				}}
-			}))
+			source.Channel(a.Events,
+				handler.TypedEnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+					if obj.GetObjectKind().GroupVersionKind().Kind != r.gvk.Kind {
+						return nil
+					}
+					return []reconcile.Request{{
+						NamespacedName: apitypes.NamespacedName{
+							Namespace: obj.GetNamespace(),
+							Name:      obj.GetName(),
+						},
+					}}
+				})))
 	}
 
 	return err

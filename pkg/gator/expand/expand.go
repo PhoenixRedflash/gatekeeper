@@ -3,17 +3,17 @@ package expand
 import (
 	"fmt"
 
-	"github.com/open-policy-agent/gatekeeper/apis/expansion/unversioned"
-	expansionv1 "github.com/open-policy-agent/gatekeeper/apis/expansion/v1alpha1"
-	mutationsunversioned "github.com/open-policy-agent/gatekeeper/apis/mutations/unversioned"
-	mutationsv1 "github.com/open-policy-agent/gatekeeper/apis/mutations/v1alpha1"
-	"github.com/open-policy-agent/gatekeeper/pkg/expansion"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/mutators/assign"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/mutators/assignimage"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/mutators/assignmeta"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/mutators/modifyset"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/apis/expansion/unversioned"
+	expansionv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/expansion/v1alpha1"
+	mutationsunversioned "github.com/open-policy-agent/gatekeeper/v3/apis/mutations/unversioned"
+	mutationsv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/mutations/v1alpha1"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/expansion"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators/assign"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators/assignimage"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators/assignmeta"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators/modifyset"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -180,7 +180,6 @@ func (er *Expander) add(u *unstructured.Unstructured) error {
 	case isNamespace(u):
 		err = er.addNamespace(u)
 	}
-
 	if err == nil {
 		// Any resource can technically be a generator
 		er.objects = append(er.objects, u)
@@ -208,14 +207,14 @@ func (er *Expander) addNamespace(u *unstructured.Unstructured) error {
 }
 
 func isExpansion(u *unstructured.Unstructured) bool {
-	return u.GroupVersionKind().Group == expansionv1.GroupVersion.Group && u.GetKind() == "ExpansionTemplate"
+	return u.GroupVersionKind().Group == expansionv1alpha1.GroupVersion.Group && u.GetKind() == "ExpansionTemplate"
 }
 
 func isMutator(obj *unstructured.Unstructured) bool {
 	if _, exists := mutatorKinds[obj.GetKind()]; !exists {
 		return false
 	}
-	return obj.GroupVersionKind().Group == mutationsv1.GroupVersion.Group
+	return obj.GroupVersionKind().Group == mutationsv1alpha1.GroupVersion.Group
 }
 
 func isNamespace(obj *unstructured.Unstructured) bool {

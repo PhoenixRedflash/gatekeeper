@@ -3,16 +3,24 @@ on:
   issue_comment:
     types: [created]
 
+permissions:
+  contents: read
+
 jobs:
   benchmark:
     name: "Benchmark"
     if: github.event.issue.pull_request && github.event.comment.body == '/benchmark'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 60
     permissions:
       contents: write
       pull-requests: write
     steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+        with:
+          egress-policy: audit
+
       - uses: izhangzhihao/delete-comment@98aa1ea5c6304048edf951c20b3114e03c785c79
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -20,14 +28,14 @@ jobs:
           issue_number: ${{ github.event.issue.number }}
 
       - name: Update status
-        uses: peter-evans/create-or-update-comment@v2
+        uses: peter-evans/create-or-update-comment@71345be0265236311c031f5c7866368bd1eff043 # v4.0.0
         with:
           issue-number: ${{ github.event.issue.number }}
           body: |
             [Running benchmark here...](${{ github.server.url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
       - name: Check out base code into the Go module directory
-        uses: actions/checkout@v3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3.5.2
         with:
           ref: ${{ github.base_ref }}
 
@@ -35,7 +43,7 @@ jobs:
         run: make benchmark-test BENCHMARK_FILE_NAME="../base_benchmarks.txt"
 
       - name: Check out code into the Go module directory
-        uses: actions/checkout@v3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3.5.2
 
       - name: Run benchmark with incoming changes
         run: make benchmark-test BENCHMARK_FILE_NAME="pr_benchmarks.txt"
@@ -53,7 +61,7 @@ jobs:
           echo '$delimiter' >> $GITHUB_OUTPUT
 
       - name: Create commit comment
-        uses: peter-evans/create-or-update-comment@v2
+        uses: peter-evans/create-or-update-comment@71345be0265236311c031f5c7866368bd1eff043 # v4.0.0
         with:
           issue-number: ${{ github.event.issue.number }}
           body: |

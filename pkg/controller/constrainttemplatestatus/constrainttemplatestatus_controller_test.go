@@ -9,26 +9,25 @@ import (
 	"github.com/onsi/gomega"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/apis/templates/v1beta1"
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
-	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/local"
-	podstatus "github.com/open-policy-agent/gatekeeper/apis/status/v1beta1"
-	"github.com/open-policy-agent/gatekeeper/pkg/controller/constrainttemplate"
-	"github.com/open-policy-agent/gatekeeper/pkg/fakes"
-	"github.com/open-policy-agent/gatekeeper/pkg/readiness"
-	"github.com/open-policy-agent/gatekeeper/pkg/target"
-	"github.com/open-policy-agent/gatekeeper/pkg/watch"
-	testclient "github.com/open-policy-agent/gatekeeper/test/clients"
-	"github.com/open-policy-agent/gatekeeper/test/testutils"
-	"github.com/open-policy-agent/gatekeeper/third_party/sigs.k8s.io/controller-runtime/pkg/dynamiccache"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/rego"
+	podstatus "github.com/open-policy-agent/gatekeeper/v3/apis/status/v1beta1"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller/constrainttemplate"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/fakes"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/target"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/watch"
+	testclient "github.com/open-policy-agent/gatekeeper/v3/test/clients"
+	"github.com/open-policy-agent/gatekeeper/v3/test/testutils"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
 const (
@@ -43,12 +42,11 @@ func setupManager(t *testing.T) (manager.Manager, *watch.Manager) {
 	t.Helper()
 
 	mgr, err := manager.New(cfg, manager.Options{
-		MetricsBindAddress: "0",
-		NewCache:           dynamiccache.New,
-		MapperProvider: func(c *rest.Config) (meta.RESTMapper, error) {
-			return apiutil.NewDynamicRESTMapper(c)
+		Metrics: metricsserver.Options{
+			BindAddress: "0",
 		},
-		Logger: testutils.NewLogger(t),
+		MapperProvider: apiutil.NewDynamicRESTMapper,
+		Logger:         testutils.NewLogger(t),
 	})
 	if err != nil {
 		t.Fatalf("setting up controller manager: %s", err)
@@ -108,25 +106,23 @@ violation[{"msg": "denied!"}] {
 
 	// creating the gatekeeper-system namespace is necessary because that's where
 	// status resources live by default
-	if err := createGatekeeperNamespace(mgr.GetConfig()); err != nil {
+	if err := testutils.CreateGatekeeperNamespace(mgr.GetConfig()); err != nil {
 		t.Fatalf("want createGatekeeperNamespace(mgr.GetConfig()) error = nil, got %v", err)
 	}
 
-	// initialize OPA
-	driver, err := local.New(local.Tracing(true))
+	driver, err := rego.New(rego.Tracing(true))
 	if err != nil {
 		t.Fatalf("unable to set up Driver: %v", err)
 	}
 
-	opaClient, err := constraintclient.NewClient(constraintclient.Targets(&target.K8sValidationTarget{}), constraintclient.Driver(driver))
+	cfClient, err := constraintclient.NewClient(constraintclient.Targets(&target.K8sValidationTarget{}), constraintclient.Driver(driver), constraintclient.EnforcementPoints(util.AuditEnforcementPoint))
 	if err != nil {
-		t.Fatalf("unable to set up OPA client: %s", err)
+		t.Fatalf("unable to set up constraint framework client: %s", err)
 	}
 
 	testutils.Setenv(t, "POD_NAME", "no-pod")
 
-	cs := watch.NewSwitch()
-	tracker, err := readiness.SetupTracker(mgr, false, false)
+	tracker, err := readiness.SetupTracker(mgr, false, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,11 +132,10 @@ violation[{"msg": "denied!"}] {
 	)
 
 	adder := constrainttemplate.Adder{
-		Opa:              opaClient,
-		WatchManager:     wm,
-		ControllerSwitch: cs,
-		Tracker:          tracker,
-		GetPod:           func(context.Context) (*corev1.Pod, error) { return pod, nil },
+		CFClient:     cfClient,
+		WatchManager: wm,
+		Tracker:      tracker,
+		GetPod:       func(context.Context) (*corev1.Pod, error) { return pod, nil },
 	}
 	err = adder.Add(mgr)
 	if err != nil {

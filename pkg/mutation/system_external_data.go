@@ -9,8 +9,8 @@ import (
 
 	externaldataUnversioned "github.com/open-policy-agent/frameworks/constraint/pkg/apis/externaldata/unversioned"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/externaldata"
-	"github.com/open-policy-agent/gatekeeper/apis/mutations/unversioned"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/apis/mutations/unversioned"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	errorsutil "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -54,11 +54,7 @@ func (s *System) resolvePlaceholders(obj *unstructured.Unstructured) error {
 	}
 
 	externalData, errors := s.sendRequests(providerKeys, clientCert)
-	if err := s.mutateWithExternalData(obj, externalData, errors); err != nil {
-		return err
-	}
-
-	return nil
+	return s.mutateWithExternalData(obj, externalData, errors)
 }
 
 // sendRequests sends requests to all providers in parallel.
@@ -105,7 +101,6 @@ func (s *System) sendRequests(providerKeys map[string]sets.Set[string], clientCe
 
 			responses[provider.Name] = make(map[string]*externaldata.Item)
 			for _, item := range resp.Response.Items {
-				item := item // for scoping
 				responses[provider.Name][item.Key] = &item
 			}
 		}(&provider, keys.UnsortedList())

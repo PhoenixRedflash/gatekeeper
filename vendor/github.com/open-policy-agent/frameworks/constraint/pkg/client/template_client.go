@@ -10,6 +10,8 @@ import (
 	"github.com/open-policy-agent/frameworks/constraint/pkg/core/templates"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/handler"
 	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
+	"k8s.io/apiextensions-apiserver/pkg/apiserver/schema"
+	"k8s.io/apiextensions-apiserver/pkg/apiserver/schema/defaulting"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -30,6 +32,23 @@ type templateClient struct {
 	// this Template. This is used to validate incoming Constraints before adding
 	// them.
 	crd *apiextensions.CustomResourceDefinition
+
+	// if, for some reason, there was an error adding a pre-cached constraint after
+	// a driver switch, AddTemplate returns an error. We should preserve that state
+	// so that we know a constraint replay should be attempted the next time AddTemplate
+	// is called.
+	needsConstraintReplay bool
+
+	// activeDrivers keeps track of drivers that are in an ambiguous state due to a failed
+	// cross-driver update. This allows us to clean up stale state on old drivers.
+	activeDrivers map[string]bool
+}
+
+func newTemplateClient() *templateClient {
+	return &templateClient{
+		constraints:   make(map[string]*constraintClient),
+		activeDrivers: make(map[string]bool),
+	}
 }
 
 func (e *templateClient) ValidateConstraint(constraint *unstructured.Unstructured) error {
@@ -41,6 +60,19 @@ func (e *templateClient) ValidateConstraint(constraint *unstructured.Unstructure
 	}
 
 	return crds.ValidateCR(constraint, e.crd)
+}
+
+// ApplyDefaultParams will apply any default parameters defined in the CRD of the constraint's
+// corresponding template.
+// Assumes ValidateConstraint() is called so the constraint is a valid CRD.
+func (e *templateClient) ApplyDefaultParams(constraint *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	structural, err := schema.NewStructural(e.crd.Spec.Validation.OpenAPIV3Schema)
+	if err != nil {
+		return nil, err
+	}
+
+	defaulting.Default(constraint.Object, structural)
+	return constraint, nil
 }
 
 func (e *templateClient) getTemplate() *templates.ConstraintTemplate {
@@ -63,10 +95,22 @@ func (e *templateClient) Update(templ *templates.ConstraintTemplate, crd *apiext
 // Returns true and no error if the Constraint was changed successfully.
 // Returns false and no error if the Constraint was not updated due to being
 // identical to the stored version.
-func (e *templateClient) AddConstraint(constraint *unstructured.Unstructured) (bool, error) {
+func (e *templateClient) AddConstraint(constraint *unstructured.Unstructured, enforcementPoints []string) (bool, error) {
+	enforcementActionsForEPs := make(map[string][]string)
 	enforcementAction, err := apiconstraints.GetEnforcementAction(constraint)
 	if err != nil {
 		return false, err
+	}
+
+	if apiconstraints.IsEnforcementActionScoped(enforcementAction) {
+		enforcementActionsForEPs, err = apiconstraints.GetEnforcementActionsForEP(constraint, enforcementPoints)
+		if err != nil {
+			return false, err
+		}
+	} else {
+		for _, ep := range enforcementPoints {
+			enforcementActionsForEPs[ep] = append(enforcementActionsForEPs[ep], enforcementAction)
+		}
 	}
 
 	// Compare with the already-existing Constraint.
@@ -85,9 +129,10 @@ func (e *templateClient) AddConstraint(constraint *unstructured.Unstructured) (b
 	delete(cpy.Object, statusField)
 
 	e.constraints[constraint.GetName()] = &constraintClient{
-		constraint:        cpy,
-		matchers:          matchers,
-		enforcementAction: enforcementAction,
+		constraint:              cpy,
+		matchers:                matchers,
+		enforcementAction:       enforcementAction,
+		enforcementActionsForEP: enforcementActionsForEPs,
 	}
 
 	return true, nil
@@ -112,11 +157,11 @@ func (e *templateClient) RemoveConstraint(name string) {
 // against the passed review.
 //
 // ignoredTargets specifies the targets whose matchers to not run.
-func (e *templateClient) Matches(target string, review interface{}) map[string]constraintMatchResult {
+func (e *templateClient) Matches(target string, review interface{}, enforcementPoints []string) map[string]constraintMatchResult {
 	result := make(map[string]constraintMatchResult)
 
 	for name, constraint := range e.constraints {
-		cResult := constraint.matches(target, review)
+		cResult := constraint.matches(target, review, enforcementPoints...)
 		if cResult != nil {
 			result[name] = *cResult
 		}

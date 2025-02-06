@@ -3,15 +3,39 @@ package crds
 import (
 	"github.com/open-policy-agent/frameworks/constraint/pkg/core/templates"
 	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 // CreateSchema combines the schema of the match target and the ConstraintTemplate parameters
 // to form the schema of the actual constraint resource.
 func CreateSchema(templ *templates.ConstraintTemplate, target MatchSchemaProvider) *apiextensions.JSONSchemaProps {
+	defaultEnforcementAction := apiextensions.JSON("deny")
 	props := map[string]apiextensions.JSONSchemaProps{
 		"match":             target.MatchSchema(),
-		"enforcementAction": {Type: "string"},
+		"enforcementAction": {Type: "string", Default: &defaultEnforcementAction},
+		"scopedEnforcementActions": {
+			Type:    "array",
+			Default: nil,
+			Items: &apiextensions.JSONSchemaPropsOrArray{
+				Schema: &apiextensions.JSONSchemaProps{
+					Type: "object",
+					Properties: map[string]apiextensions.JSONSchemaProps{
+						"action": {Type: "string"},
+						"enforcementPoints": {
+							Type: "array",
+							Items: &apiextensions.JSONSchemaPropsOrArray{
+								Schema: &apiextensions.JSONSchemaProps{
+									Type: "object",
+									Properties: map[string]apiextensions.JSONSchemaProps{
+										"name": {Type: "string"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	if templ.Spec.CRD.Spec.Validation != nil && templ.Spec.CRD.Spec.Validation.OpenAPIV3Schema != nil {
@@ -27,7 +51,7 @@ func CreateSchema(templ *templates.ConstraintTemplate, target MatchSchemaProvide
 				Properties: map[string]apiextensions.JSONSchemaProps{
 					"name": {
 						Type:      "string",
-						MaxLength: pointer.Int64(63),
+						MaxLength: ptr.To[int64](63),
 					},
 				},
 			},
@@ -36,7 +60,7 @@ func CreateSchema(templ *templates.ConstraintTemplate, target MatchSchemaProvide
 				Properties: props,
 			},
 			"status": {
-				XPreserveUnknownFields: pointer.BoolPtr(true),
+				XPreserveUnknownFields: ptr.To[bool](true),
 			},
 		},
 	}

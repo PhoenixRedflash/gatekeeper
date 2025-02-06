@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"testing"
 
-	mutationsunversioned "github.com/open-policy-agent/gatekeeper/apis/mutations/unversioned"
-	"github.com/open-policy-agent/gatekeeper/pkg/fakes"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/match"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/mutators"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/mutators/testhelpers"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
+	mutationsunversioned "github.com/open-policy-agent/gatekeeper/v3/apis/mutations/unversioned"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/fakes"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/match"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators/testhelpers"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -171,7 +171,7 @@ func TestObjectsAndLists(t *testing.T) {
 }
 
 func TestListsAsLastElementWithStringValue(t *testing.T) {
-	testFunc := func(u *unstructured.Unstructured) {}
+	testFunc := func(_ *unstructured.Unstructured) {}
 
 	if err := testDummyMutation(
 		`spec.containers["name": "notExists"]`,
@@ -382,7 +382,7 @@ func TestAssignDoesNotMatchObjectStructure(t *testing.T) {
 }
 
 func TestListsAsLastElementAlreadyExistsWithKeyConflict(t *testing.T) {
-	testFunc := func(u *unstructured.Unstructured) {}
+	testFunc := func(_ *unstructured.Unstructured) {}
 	var v interface{}
 	err := json.Unmarshal([]byte("{\"name\": \"conflictingName\", \"foo\": \"bar\"}"), &v)
 	if err != nil {
@@ -579,7 +579,7 @@ func testAssignMetadataMutation(
 	return testMutation(mutator, unstructured, testFunc, t)
 }
 
-func testMutation(mutator types.Mutator, unstructured *unstructured.Unstructured, testFunc func(*unstructured.Unstructured), t *testing.T) error {
+func testMutation(mutator types.Mutator, unstructured *unstructured.Unstructured, testFunc func(*unstructured.Unstructured), _ *testing.T) error {
 	_, err := mutator.Mutate(&types.Mutable{Object: unstructured})
 	if err != nil {
 		return err

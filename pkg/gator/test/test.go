@@ -5,14 +5,16 @@ import (
 	"fmt"
 
 	"github.com/open-policy-agent/frameworks/constraint/pkg/apis"
-	templatesv1 "github.com/open-policy-agent/frameworks/constraint/pkg/apis/templates/v1"
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
-	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/local"
-	"github.com/open-policy-agent/gatekeeper/pkg/expansion"
-	"github.com/open-policy-agent/gatekeeper/pkg/gator/expand"
-	"github.com/open-policy-agent/gatekeeper/pkg/gator/reader"
-	mutationtypes "github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
-	"github.com/open-policy-agent/gatekeeper/pkg/target"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/rego"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/client/reviews"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/drivers/k8scel"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/expansion"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/gator/expand"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/gator/reader"
+	mutationtypes "github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/target"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -27,15 +29,29 @@ func init() {
 	}
 }
 
-func Test(objs []*unstructured.Unstructured, includeTrace bool) (*GatorResponses, error) {
-	// create the client
+// options for the Test func.
+type Opts struct {
+	// Driver specific options
+	IncludeTrace bool
+	GatherStats  bool
+	UseK8sCEL    bool
+}
 
-	driver, err := local.New(local.Tracing(includeTrace))
+func Test(objs []*unstructured.Unstructured, tOpts Opts) (*GatorResponses, error) {
+	args := []constraintclient.Opt{constraintclient.Targets(&target.K8sValidationTarget{})}
+	k8sDriver, err := k8scel.New()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating K8s native driver: %w", err)
 	}
+	args = append(args, constraintclient.Driver(k8sDriver))
 
-	client, err := constraintclient.NewClient(constraintclient.Targets(&target.K8sValidationTarget{}), constraintclient.Driver(driver))
+	driver, err := makeRegoDriver(tOpts)
+	if err != nil {
+		return nil, fmt.Errorf("creating Rego driver: %w", err)
+	}
+	args = append(args, constraintclient.Driver(driver), constraintclient.EnforcementPoints(util.GatorEnforcementPoint))
+
+	client, err := constraintclient.NewClient(args...)
 	if err != nil {
 		return nil, fmt.Errorf("creating OPA client: %w", err)
 	}
@@ -43,7 +59,7 @@ func Test(objs []*unstructured.Unstructured, includeTrace bool) (*GatorResponses
 	// search for templates, add them if they exist
 	ctx := context.Background()
 	for _, obj := range objs {
-		if !isTemplate(obj) {
+		if !reader.IsTemplate(obj) {
 			continue
 		}
 
@@ -61,7 +77,7 @@ func Test(objs []*unstructured.Unstructured, includeTrace bool) (*GatorResponses
 	// add all constraints.  A constraint must be added after its associated
 	// template or OPA will return an error
 	for _, obj := range objs {
-		if !isConstraint(obj) {
+		if !reader.IsConstraint(obj) {
 			continue
 		}
 
@@ -98,7 +114,7 @@ func Test(objs []*unstructured.Unstructured, includeTrace bool) (*GatorResponses
 			Source:    mutationtypes.SourceTypeOriginal,
 		}
 
-		review, err := client.Review(ctx, au)
+		review, err := client.Review(ctx, au, reviews.EnforcementPoint(util.GatorEnforcementPoint))
 		if err != nil {
 			return nil, fmt.Errorf("reviewing %v %s/%s: %w",
 				obj.GroupVersionKind(), obj.GetNamespace(), obj.GetName(), err)
@@ -115,13 +131,14 @@ func Test(objs []*unstructured.Unstructured, includeTrace bool) (*GatorResponses
 				Namespace: ns,
 				Source:    mutationtypes.SourceTypeGenerated,
 			}
-			resultantReview, err := client.Review(ctx, au)
+			resultantReview, err := client.Review(ctx, au, reviews.EnforcementPoint(util.GatorEnforcementPoint))
 			if err != nil {
 				return nil, fmt.Errorf("reviewing expanded resource %v %s/%s: %w",
 					resultant.Obj.GroupVersionKind(), resultant.Obj.GetNamespace(), resultant.Obj.GetName(), err)
 			}
 			expansion.OverrideEnforcementAction(resultant.EnforcementAction, resultantReview)
 			expansion.AggregateResponses(resultant.TemplateName, review, resultantReview)
+			expansion.AggregateStats(resultant.TemplateName, review, resultantReview)
 		}
 
 		for targetName, r := range review.ByTarget {
@@ -148,20 +165,23 @@ func Test(objs []*unstructured.Unstructured, includeTrace bool) (*GatorResponses
 				trace = trace + "\n\n" + *r.Trace
 				targetResponse.Trace = &trace
 			}
-
 			responses.ByTarget[targetName] = targetResponse
 		}
+
+		responses.StatsEntries = append(responses.StatsEntries, review.StatsEntries...)
 	}
 
 	return responses, nil
 }
 
-func isTemplate(u *unstructured.Unstructured) bool {
-	gvk := u.GroupVersionKind()
-	return gvk.Group == templatesv1.SchemeGroupVersion.Group && gvk.Kind == "ConstraintTemplate"
-}
+func makeRegoDriver(tOpts Opts) (*rego.Driver, error) {
+	var args []rego.Arg
+	if tOpts.GatherStats {
+		args = append(args, rego.GatherStats())
+	}
+	if tOpts.IncludeTrace {
+		args = append(args, rego.Tracing(tOpts.IncludeTrace))
+	}
 
-func isConstraint(u *unstructured.Unstructured) bool {
-	gvk := u.GroupVersionKind()
-	return gvk.Group == "constraints.gatekeeper.sh"
+	return rego.New(args...)
 }

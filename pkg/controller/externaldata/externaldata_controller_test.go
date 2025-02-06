@@ -11,25 +11,23 @@ import (
 	externaldataUnversioned "github.com/open-policy-agent/frameworks/constraint/pkg/apis/externaldata/unversioned"
 	externaldatav1beta1 "github.com/open-policy-agent/frameworks/constraint/pkg/apis/externaldata/v1beta1"
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
-	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/local"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/rego"
 	frameworksexternaldata "github.com/open-policy-agent/frameworks/constraint/pkg/externaldata"
-	"github.com/open-policy-agent/gatekeeper/pkg/externaldata"
-	"github.com/open-policy-agent/gatekeeper/pkg/readiness"
-	"github.com/open-policy-agent/gatekeeper/pkg/target"
-	"github.com/open-policy-agent/gatekeeper/pkg/util"
-	"github.com/open-policy-agent/gatekeeper/pkg/watch"
-	testclient "github.com/open-policy-agent/gatekeeper/test/clients"
-	"github.com/open-policy-agent/gatekeeper/test/testutils"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/externaldata"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/target"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
+	testclient "github.com/open-policy-agent/gatekeeper/v3/test/clients"
+	"github.com/open-policy-agent/gatekeeper/v3/test/testutils"
 	"github.com/prometheus/client_golang/prometheus"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -46,10 +44,10 @@ func setupManager(t *testing.T) manager.Manager {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 	metrics.Registry = prometheus.NewRegistry()
 	mgr, err := manager.New(cfg, manager.Options{
-		MetricsBindAddress: "0",
-		MapperProvider: func(c *rest.Config) (meta.RESTMapper, error) {
-			return apiutil.NewDynamicRESTMapper(c)
+		Metrics: metricsserver.Options{
+			BindAddress: "0",
 		},
+		MapperProvider: apiutil.NewDynamicRESTMapper,
 	})
 	if err != nil {
 		t.Fatalf("setting up controller manager: %s", err)
@@ -83,25 +81,23 @@ func TestReconcile(t *testing.T) {
 	*externaldata.ExternalDataEnabled = true
 	pc := frameworksexternaldata.NewCache()
 
-	// initialize OPA
-	args := []local.Arg{local.Tracing(false), local.AddExternalDataProviderCache(pc)}
-	driver, err := local.New(args...)
+	args := []rego.Arg{rego.Tracing(false), rego.AddExternalDataProviderCache(pc)}
+	driver, err := rego.New(args...)
 	if err != nil {
 		t.Fatalf("unable to set up Driver: %v", err)
 	}
 
-	opa, err := constraintclient.NewClient(constraintclient.Targets(&target.K8sValidationTarget{}), constraintclient.Driver(driver))
+	cfClient, err := constraintclient.NewClient(constraintclient.Targets(&target.K8sValidationTarget{}), constraintclient.Driver(driver), constraintclient.EnforcementPoints(util.AuditEnforcementPoint))
 	if err != nil {
-		t.Fatalf("unable to set up OPA client: %s", err)
+		t.Fatalf("unable to set up constraint framework client: %s", err)
 	}
 
-	cs := watch.NewSwitch()
-	tracker, err := readiness.SetupTracker(mgr, false, true)
+	tracker, err := readiness.SetupTracker(mgr, false, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	rec := newReconciler(mgr, opa, pc, tracker)
+	rec := newReconciler(mgr, cfClient, pc, tracker)
 
 	recFn, requests := SetupTestReconcile(rec)
 	err = add(mgr, recFn)
@@ -184,5 +180,4 @@ func TestReconcile(t *testing.T) {
 	})
 
 	testMgrStopped()
-	cs.Stop()
 }

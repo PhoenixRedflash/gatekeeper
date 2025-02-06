@@ -2,12 +2,13 @@ package testhelpers
 
 import (
 	"reflect"
+	"strings"
 
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/match"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/mutators/core"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/path/parser"
-	path "github.com/open-policy-agent/gatekeeper/pkg/mutation/path/tester"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/match"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators/core"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/path/parser"
+	path "github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/path/tester"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 )
 
 var _ types.Mutator = &DummyMutator{}
@@ -36,13 +37,13 @@ func (d *DummyMutator) Path() parser.Path {
 	return d.path
 }
 
-func (d *DummyMutator) Matches(mutable *types.Mutable) bool {
+func (d *DummyMutator) Matches(mutable *types.Mutable) (bool, error) {
 	m := &match.Matchable{Object: mutable.Object, Namespace: mutable.Namespace}
 	matches, err := match.Matches(&d.match, m)
 	if err != nil {
-		return false
+		return false, err
 	}
-	return matches
+	return matches, nil
 }
 
 func (d *DummyMutator) Mutate(mutable *types.Mutable) (bool, error) {
@@ -64,4 +65,9 @@ func NewDummyMutator(name, path string, value interface{}) *DummyMutator {
 		panic(err)
 	}
 	return &DummyMutator{name: name, path: p, value: value}
+}
+
+// BigName returns a 64-length string.
+func BigName() string {
+	return strings.Repeat("abigname", 8) // 8 X 8 = 64
 }

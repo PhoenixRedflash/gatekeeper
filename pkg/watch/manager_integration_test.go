@@ -25,19 +25,17 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/onsi/gomega"
-	"github.com/open-policy-agent/gatekeeper/pkg/fakes"
-	"github.com/open-policy-agent/gatekeeper/pkg/util"
-	"github.com/open-policy-agent/gatekeeper/pkg/watch"
-	testclient "github.com/open-policy-agent/gatekeeper/test/clients"
-	"github.com/open-policy-agent/gatekeeper/test/testutils"
-	"github.com/open-policy-agent/gatekeeper/third_party/sigs.k8s.io/controller-runtime/pkg/dynamiccache"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/fakes"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/watch"
+	testclient "github.com/open-policy-agent/gatekeeper/v3/test/clients"
+	"github.com/open-policy-agent/gatekeeper/v3/test/testutils"
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -51,6 +49,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
@@ -61,12 +60,11 @@ func setupManager(t *testing.T) (manager.Manager, *watch.Manager) {
 
 	metrics.Registry = prometheus.NewRegistry()
 	mgr, err := manager.New(cfg, manager.Options{
-		MetricsBindAddress: "0",
-		NewCache:           dynamiccache.New,
-		MapperProvider: func(c *rest.Config) (meta.RESTMapper, error) {
-			return apiutil.NewDynamicRESTMapper(c)
+		Metrics: metricsserver.Options{
+			BindAddress: "0",
 		},
-		Logger: testutils.NewLogger(t),
+		MapperProvider: apiutil.NewDynamicRESTMapper,
+		Logger:         testutils.NewLogger(t),
 	})
 	if err != nil {
 		t.Fatalf("setting up controller manager: %s", err)
@@ -95,11 +93,7 @@ func setupController(mgr manager.Manager, r reconcile.Reconciler, events chan ev
 
 	// Watch for changes to the provided constraint
 	return c.Watch(
-		&source.Channel{
-			Source:         events,
-			DestBufferSize: 1024,
-		},
-		handler.EnqueueRequestsFromMapFunc(util.EventPackerMapFunc()),
+		source.Channel(events, handler.EnqueueRequestsFromMapFunc(util.EventPackerMapFunc())),
 	)
 }
 
@@ -121,7 +115,7 @@ func TestRegistrar_AddUnknown(t *testing.T) {
 		t.Fatalf("creating registrar: %v", err)
 	}
 
-	err = r.AddWatch(schema.GroupVersionKind{
+	err = r.AddWatch(ctx, schema.GroupVersionKind{
 		Group:   "i",
 		Version: "donot",
 		Kind:    "exist",
@@ -180,11 +174,8 @@ func Test_ReconcileErrorDoesNotBlockController(t *testing.T) {
 		t.Fatalf("creating controller: %v", err)
 	}
 	err = c.Watch(
-		&source.Channel{
-			Source:         events,
-			DestBufferSize: 1024,
-		},
-		&handler.EnqueueRequestForObject{},
+		source.Channel(events,
+			&handler.EnqueueRequestForObject{}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -197,9 +188,7 @@ func Test_ReconcileErrorDoesNotBlockController(t *testing.T) {
 	// Setup another watch. Show that both the error resource (in a backoff-requeue loop)
 	// and other resources can reconcile in an interleaving fashion.
 	err = c.Watch(
-		&source.Kind{Type: &corev1.Namespace{}},
-		&handler.EnqueueRequestForObject{},
-	)
+		source.Kind(mgr.GetCache(), &corev1.Namespace{}, &handler.TypedEnqueueRequestForObject[*corev1.Namespace]{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +262,7 @@ func TestRegistrar_Reconnect(t *testing.T) {
 		t.Fatalf("applying CRD: %v", err)
 	}
 
-	err = r.AddWatch(gvk)
+	err = r.AddWatch(ctx, gvk)
 	if err != nil {
 		t.Fatalf("adding watch: %v", err)
 	}
@@ -361,17 +350,14 @@ func Test_Registrar_Replay(t *testing.T) {
 			t.Fatalf("creating controller: %v", err)
 		}
 		err = c.Watch(
-			&source.Channel{
-				Source:         events,
-				DestBufferSize: 1024,
-			},
-			&handler.EnqueueRequestForObject{},
-		)
+			source.Channel(
+				events,
+				&handler.EnqueueRequestForObject{}))
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		err = r.AddWatch(gvk)
+		err = r.AddWatch(ctx, gvk)
 		if err != nil {
 			t.Fatal(err)
 		}

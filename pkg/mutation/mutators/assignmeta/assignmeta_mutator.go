@@ -5,14 +5,14 @@ import (
 	"reflect"
 
 	"github.com/google/go-cmp/cmp"
-	mutationsunversioned "github.com/open-policy-agent/gatekeeper/apis/mutations/unversioned"
-	mutationsv1beta1 "github.com/open-policy-agent/gatekeeper/apis/mutations/v1beta1"
-	"github.com/open-policy-agent/gatekeeper/pkg/logging"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/match"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/mutators/core"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/path/parser"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/path/tester"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
+	mutationsunversioned "github.com/open-policy-agent/gatekeeper/v3/apis/mutations/unversioned"
+	mutationsv1beta1 "github.com/open-policy-agent/gatekeeper/v3/apis/mutations/v1beta1"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/logging"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/match"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators/core"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/path/parser"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/path/tester"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 	"github.com/pkg/errors"
 	runtimeschema "k8s.io/apimachinery/pkg/runtime/schema"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -54,7 +54,7 @@ type Mutator struct {
 // Mutator implements mutator.
 var _ types.Mutator = &Mutator{}
 
-func (m *Mutator) Matches(mutable *types.Mutable) bool {
+func (m *Mutator) Matches(mutable *types.Mutable) (bool, error) {
 	target := &match.Matchable{
 		Object:    mutable.Object,
 		Namespace: mutable.Namespace,
@@ -63,9 +63,8 @@ func (m *Mutator) Matches(mutable *types.Mutable) bool {
 	matches, err := match.Matches(&m.assignMetadata.Spec.Match, target)
 	if err != nil {
 		log.Error(err, "Matches failed for assign metadata", "assignMeta", m.assignMetadata.Name)
-		return false
 	}
-	return matches
+	return matches, err
 }
 
 func (m *Mutator) Mutate(mutable *types.Mutable) (bool, error) {
@@ -125,6 +124,10 @@ func (m *Mutator) String() string {
 
 // MutatorForAssignMetadata builds a Mutator from the given AssignMetadata object.
 func MutatorForAssignMetadata(assignMeta *mutationsunversioned.AssignMetadata) (*Mutator, error) {
+	if err := core.ValidateName(assignMeta.Name); err != nil {
+		return nil, err
+	}
+
 	// This is not always set by the kubernetes API server
 	assignMeta.SetGroupVersionKind(runtimeschema.GroupVersionKind{Group: mutationsv1beta1.GroupVersion.Group, Kind: "AssignMetadata"})
 

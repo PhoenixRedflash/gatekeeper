@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/open-policy-agent/gatekeeper/pkg/metrics/exporters/prometheus"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/metrics/exporters/prometheus"
 )
 
 // Validates flags parsing for metrics reporters.
@@ -27,8 +27,8 @@ func Test_Flags(t *testing.T) {
 			},
 		},
 		"one": {
-			input:    []string{"--metrics-backend", "opencensus"},
-			expected: map[string]StartExporter{"opencensus": exporters.registeredExporters["opencensus"]},
+			input:    []string{"--metrics-backend", "opentelemetry"},
+			expected: map[string]StartExporter{"opentelemetry": exporters.registeredExporters["opentelemetry"]},
 		},
 	}
 

@@ -40,6 +40,8 @@ type fakeCacheInformer struct {
 	handlers map[kcache.ResourceEventHandler]int
 }
 
+func (f *fakeCacheInformer) IsStopped() bool { return false }
+
 func (f *fakeCacheInformer) AddEventHandler(h kcache.ResourceEventHandler) (kcache.ResourceEventHandlerRegistration, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -50,15 +52,15 @@ func (f *fakeCacheInformer) AddEventHandler(h kcache.ResourceEventHandler) (kcac
 	return nil, nil
 }
 
-func (f *fakeCacheInformer) RemoveEventHandler(handle kcache.ResourceEventHandlerRegistration) error {
+func (f *fakeCacheInformer) RemoveEventHandler(_ kcache.ResourceEventHandlerRegistration) error {
 	return nil
 }
 
-func (f *fakeCacheInformer) AddEventHandlerWithResyncPeriod(h kcache.ResourceEventHandler, resyncPeriod time.Duration) (kcache.ResourceEventHandlerRegistration, error) {
+func (f *fakeCacheInformer) AddEventHandlerWithResyncPeriod(h kcache.ResourceEventHandler, _ time.Duration) (kcache.ResourceEventHandlerRegistration, error) {
 	return f.AddEventHandler(h)
 }
 
-func (f *fakeCacheInformer) AddIndexers(indexers kcache.Indexers) error {
+func (f *fakeCacheInformer) AddIndexers(_ kcache.Indexers) error {
 	return errors.New("not implemented")
 }
 
@@ -85,11 +87,11 @@ type fakeRemovableCache struct {
 	removeCounter int
 }
 
-func (f *fakeRemovableCache) GetInformerNonBlocking(obj client.Object) (cache.Informer, error) {
+func (f *fakeRemovableCache) GetInformer(_ context.Context, _ client.Object, _ ...cache.InformerGetOption) (cache.Informer, error) {
 	return f.informer, nil
 }
 
-func (f *fakeRemovableCache) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+func (f *fakeRemovableCache) List(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
 	switch v := list.(type) {
 	case *unstructured.UnstructuredList:
 		v.Items = f.items
@@ -99,7 +101,7 @@ func (f *fakeRemovableCache) List(ctx context.Context, list client.ObjectList, o
 	return nil
 }
 
-func (f *fakeRemovableCache) Remove(obj client.Object) error {
+func (f *fakeRemovableCache) RemoveInformer(_ context.Context, _ client.Object) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.removeCounter++
@@ -114,12 +116,12 @@ func (f *fakeRemovableCache) removeCount() int {
 
 type funcCache struct {
 	ListFunc                   func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error
-	GetInformerNonBlockingFunc func(obj client.Object) (cache.Informer, error)
+	GetInformerNonBlockingFunc func(ctx context.Context, obj client.Object) (cache.Informer, error)
 }
 
-func (f *funcCache) GetInformerNonBlocking(obj client.Object) (cache.Informer, error) {
+func (f *funcCache) GetInformer(ctx context.Context, obj client.Object, _ ...cache.InformerGetOption) (cache.Informer, error) {
 	if f.GetInformerNonBlockingFunc != nil {
-		return f.GetInformerNonBlockingFunc(obj)
+		return f.GetInformerNonBlockingFunc(ctx, obj)
 	}
 	return &fakeCacheInformer{}, nil
 }
@@ -131,7 +133,7 @@ func (f *funcCache) List(ctx context.Context, list client.ObjectList, opts ...cl
 	return errors.New("ListFunc not initialized")
 }
 
-func (f *funcCache) Remove(obj client.Object) error {
+func (f *funcCache) RemoveInformer(_ context.Context, _ client.Object) error {
 	return nil
 }
 
@@ -157,6 +159,7 @@ func setupWatchManager(c RemovableCache) (*Manager, context.CancelFunc, error) {
 // Verifies that redundant calls to AddWatch (even across registrars) will be idempotent
 // and only register a single event handler on the respective informer.
 func TestRegistrar_AddWatch_Idempotent(t *testing.T) {
+	ctx := context.Background()
 	informer := &fakeCacheInformer{}
 	c := &fakeRemovableCache{informer: informer}
 	wm, cancel, err := setupWatchManager(c)
@@ -183,11 +186,11 @@ func TestRegistrar_AddWatch_Idempotent(t *testing.T) {
 	}
 
 	for _, r := range []*Registrar{r1, r2} {
-		if err := r.AddWatch(gvk); err != nil {
+		if err := r.AddWatch(ctx, gvk); err != nil {
 			t.Errorf("setting initial watch: %v", err)
 			return
 		}
-		if err := r.AddWatch(gvk); err != nil {
+		if err := r.AddWatch(ctx, gvk); err != nil {
 			t.Errorf("setting redundant watch: %v", err)
 			return
 		}
@@ -209,6 +212,7 @@ func TestRegistrar_AddWatch_Idempotent(t *testing.T) {
 }
 
 func TestRegistrar_RemoveWatch_Idempotent(t *testing.T) {
+	ctx := context.Background()
 	informer := &fakeCacheInformer{}
 	c := &fakeRemovableCache{informer: informer}
 	wm, cancel, err := setupWatchManager(c)
@@ -235,7 +239,7 @@ func TestRegistrar_RemoveWatch_Idempotent(t *testing.T) {
 	}
 
 	for _, r := range []*Registrar{r1, r2} {
-		if err := r.AddWatch(gvk); err != nil {
+		if err := r.AddWatch(ctx, gvk); err != nil {
 			t.Errorf("setting initial watch: %v", err)
 			return
 		}
@@ -247,7 +251,7 @@ func TestRegistrar_RemoveWatch_Idempotent(t *testing.T) {
 		return
 	}
 
-	if err := r1.RemoveWatch(gvk); err != nil {
+	if err := r1.RemoveWatch(ctx, gvk); err != nil {
 		t.Errorf("removing first watch: %v", err)
 		return
 	}
@@ -264,7 +268,7 @@ func TestRegistrar_RemoveWatch_Idempotent(t *testing.T) {
 		return
 	}
 
-	if err := r2.RemoveWatch(gvk); err != nil {
+	if err := r2.RemoveWatch(ctx, gvk); err != nil {
 		t.Errorf("removing second watch: %v", err)
 		return
 	}
@@ -283,7 +287,7 @@ func TestRegistrar_RemoveWatch_Idempotent(t *testing.T) {
 	}
 
 	// Extra removes are fine.
-	if err := r2.RemoveWatch(gvk); err != nil {
+	if err := r2.RemoveWatch(ctx, gvk); err != nil {
 		t.Errorf("redundant remove: %v", err)
 		return
 	}
@@ -329,7 +333,7 @@ func TestRegistrar_Replay(t *testing.T) {
 	}
 
 	for _, entry := range registrars {
-		if err := entry.r.AddWatch(gvk); err != nil {
+		if err := entry.r.AddWatch(ctx, gvk); err != nil {
 			t.Errorf("setting initial watch: %v", err)
 			return
 		}
@@ -384,7 +388,7 @@ func TestRegistrar_Replay_Retry(t *testing.T) {
 	resources := generateTestResources(gvk, 10)
 	errCount := 3
 	c := &funcCache{
-		ListFunc: func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+		ListFunc: func(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
 			if errCount > 0 {
 				errCount--
 				return fmt.Errorf("failing %d more times", errCount)
@@ -397,7 +401,7 @@ func TestRegistrar_Replay_Retry(t *testing.T) {
 			}
 			return nil
 		},
-		GetInformerNonBlockingFunc: func(obj client.Object) (cache.Informer, error) {
+		GetInformerNonBlockingFunc: func(_ context.Context, _ client.Object) (cache.Informer, error) {
 			return informer, nil
 		},
 	}
@@ -422,7 +426,7 @@ func TestRegistrar_Replay_Retry(t *testing.T) {
 	}
 
 	for _, r := range []*Registrar{r1, r2} {
-		if err := r.AddWatch(gvk); err != nil {
+		if err := r.AddWatch(ctx, gvk); err != nil {
 			t.Errorf("setting initial watch: %v", err)
 			return
 		}
@@ -464,7 +468,7 @@ func TestRegistrar_Replay_Async(t *testing.T) {
 	listCalled := make(chan struct{})
 	listDone := make(chan struct{})
 	c := &funcCache{
-		ListFunc: func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+		ListFunc: func(ctx context.Context, _ client.ObjectList, _ ...client.ListOption) error {
 			listCalled <- struct{}{}
 
 			// Block until we're canceled.
@@ -507,7 +511,7 @@ func TestRegistrar_Replay_Async(t *testing.T) {
 		Kind:    "Pod",
 	}
 	for _, r := range []*Registrar{r1, r2} {
-		if err := r.AddWatch(gvk); err != nil {
+		if err := r.AddWatch(ctx, gvk); err != nil {
 			t.Errorf("setting initial watch: %v", err)
 			return
 		}
@@ -522,7 +526,7 @@ func TestRegistrar_Replay_Async(t *testing.T) {
 	}
 
 	// Ensure we can cancel a pending replay
-	if err := r2.RemoveWatch(gvk); err != nil {
+	if err := r2.RemoveWatch(ctx, gvk); err != nil {
 		t.Errorf("removing watch: %v", err)
 	}
 
@@ -534,7 +538,7 @@ func TestRegistrar_Replay_Async(t *testing.T) {
 	}
 
 	// [Scenario 2] - Verify that pending replays are canceled during watch manager shutdown.
-	if err := r2.AddWatch(gvk); err != nil {
+	if err := r2.AddWatch(ctx, gvk); err != nil {
 		t.Errorf("adding watch: %v", err)
 	}
 	select {
@@ -580,12 +584,13 @@ func TestRegistrar_Duplicates_Rejected(t *testing.T) {
 // Verify ReplaceWatch replaces the set of watched resources for a registrar. New watches will be added,
 // unneeded watches will be removed, and watches that haven't changed will remain unchanged.
 func TestRegistrar_ReplaceWatch(t *testing.T) {
+	ctx := context.Background()
 	g := gomega.NewWithT(t)
 	var mu sync.Mutex
 	listCalls := make(map[schema.GroupVersionKind]int)
 	getInformerCalls := make(map[schema.GroupVersionKind]int)
 	c := &funcCache{
-		ListFunc: func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+		ListFunc: func(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
 			mu.Lock()
 			defer mu.Unlock()
 			gvk := list.GetObjectKind().GroupVersionKind()
@@ -593,7 +598,7 @@ func TestRegistrar_ReplaceWatch(t *testing.T) {
 			listCalls[gvk]++
 			return nil
 		},
-		GetInformerNonBlockingFunc: func(obj client.Object) (cache.Informer, error) {
+		GetInformerNonBlockingFunc: func(_ context.Context, obj client.Object) (cache.Informer, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			gvk := obj.GetObjectKind().GroupVersionKind()
@@ -624,28 +629,28 @@ func TestRegistrar_ReplaceWatch(t *testing.T) {
 	service := schema.GroupVersionKind{Version: "v1", Kind: "Service"}
 	secret := schema.GroupVersionKind{Version: "v1", Kind: "Secret"}
 
-	err = r1.AddWatch(pod)
+	err = r1.AddWatch(ctx, pod)
 	if err != nil {
 		t.Fatalf("initial pod watch: %v", err)
 	}
-	err = r1.AddWatch(volume)
+	err = r1.AddWatch(ctx, volume)
 	if err != nil {
 		t.Fatalf("initial volume watch: %v", err)
 	}
-	err = r1.AddWatch(deploy)
+	err = r1.AddWatch(ctx, deploy)
 	if err != nil {
 		t.Fatalf("initial deployment watch: %v", err)
 	}
 
-	err = r2.AddWatch(volume)
+	err = r2.AddWatch(ctx, volume)
 	if err != nil {
 		t.Fatalf("initial volume watch: %v", err)
 	}
-	err = r2.AddWatch(configMap)
+	err = r2.AddWatch(ctx, configMap)
 	if err != nil {
 		t.Fatalf("initial configmap watch: %v", err)
 	}
-	err = r2.AddWatch(secret)
+	err = r2.AddWatch(ctx, secret)
 	if err != nil {
 		t.Fatalf("initial secret watch: %v", err)
 	}
@@ -682,7 +687,7 @@ func TestRegistrar_ReplaceWatch(t *testing.T) {
 
 	// Pod overlaps between r1 and r2. Secret is retained. ConfigMap is swapped for Service.
 	// Volume originally overlapped between r1 and r2, but will be removed from r2.
-	err = r2.ReplaceWatch([]schema.GroupVersionKind{pod, service, secret})
+	err = r2.ReplaceWatch(ctx, []schema.GroupVersionKind{pod, service, secret})
 	if err != nil {
 		t.Fatalf("calling replaceWatch: %v", err)
 	}

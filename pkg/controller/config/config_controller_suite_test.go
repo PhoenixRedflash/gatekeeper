@@ -16,22 +16,16 @@ limitations under the License.
 package config
 
 import (
-	"context"
 	stdlog "log"
 	"os"
 	"path/filepath"
 	"testing"
 
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"github.com/open-policy-agent/gatekeeper/v3/apis"
+	"github.com/open-policy-agent/gatekeeper/v3/test/testutils"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	"github.com/open-policy-agent/gatekeeper/apis"
 )
 
 var cfg *rest.Config
@@ -44,6 +38,11 @@ func TestMain(m *testing.M) {
 		},
 		ErrorIfCRDPathMissing: true,
 	}
+	///TODO(ritazh): remove when vap is GAed in k/k
+	args := t.ControlPlane.GetAPIServer().Configure()
+	args.Append("runtime-config", "api/all=true")
+	args.Append("feature-gates", "ValidatingAdmissionPolicy=true")
+
 	if err := apis.AddToScheme(scheme.Scheme); err != nil {
 		stdlog.Fatal(err)
 	}
@@ -53,7 +52,7 @@ func TestMain(m *testing.M) {
 		stdlog.Fatal(err)
 	}
 
-	if err := createGatekeeperNamespace(cfg); err != nil {
+	if err := testutils.CreateGatekeeperNamespace(cfg); err != nil {
 		stdlog.Printf("creating namespace: %v", err)
 	}
 
@@ -62,35 +61,4 @@ func TestMain(m *testing.M) {
 		stdlog.Printf("error while trying to stop server: %v", err)
 	}
 	os.Exit(code)
-}
-
-// SetupTestReconcile returns a reconcile.Reconcile implementation that delegates to inner and
-// writes the request to requests after Reconcile is finished.
-func SetupTestReconcile(inner reconcile.Reconciler) (reconcile.Reconciler, chan reconcile.Request) {
-	requests := make(chan reconcile.Request)
-	fn := reconcile.Func(func(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
-		result, err := inner.Reconcile(ctx, req)
-		requests <- req
-		return result, err
-	})
-	return fn, requests
-}
-
-// Bootstrap the gatekeeper-system namespace for use in tests.
-func createGatekeeperNamespace(cfg *rest.Config) error {
-	c, err := client.New(cfg, client.Options{})
-	if err != nil {
-		return err
-	}
-
-	// Create gatekeeper namespace
-	ns := &v1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "gatekeeper-system",
-		},
-	}
-
-	ctx := context.Background()
-	_, err = controllerutil.CreateOrUpdate(ctx, c, ns, func() error { return nil })
-	return err
 }

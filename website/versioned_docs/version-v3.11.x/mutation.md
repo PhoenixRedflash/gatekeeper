@@ -158,7 +158,7 @@ parameters:
   pathTests:
   - subPath: "spec.containers[name: foo]"
     condition: MustExist
-  - subPath: spec.containers[name: foo].securityContext.capabilities
+  - subPath: "spec.containers[name: foo].securityContext.capabilities"
     condition: MustNotExist
 ```
 
@@ -213,6 +213,10 @@ spec:
 - `spec.parameters.values.fromList` holds the list of values that will be added or removed.
 - `operation` can be `merge` to insert values into the list if missing, or `prune` to remove values from the list. `merge` is default.
 
+### Mutation Annotations
+
+You can have two recording annotations applied at mutation time by enabling the `--mutation-annotations` flag. More details can be found on the
+[customize startup docs page](./customize-startup.md).
 
 ## Examples
 
@@ -256,6 +260,9 @@ spec:
   parameters:
     assign:
       value: false
+    pathTests:
+    - subPath: "spec.containers[name:foo]"
+      condition: MustExist
 ```
 
 #### Setting imagePullPolicy of all containers to Always in all namespaces except namespace `system`

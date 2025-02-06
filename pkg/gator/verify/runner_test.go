@@ -10,10 +10,12 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
-	"github.com/open-policy-agent/gatekeeper/pkg/gator"
-	"github.com/open-policy-agent/gatekeeper/pkg/gator/fixtures"
+	clienterrors "github.com/open-policy-agent/frameworks/constraint/pkg/client/errors"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/gator"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/gator/fixtures"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/target"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 func TestRunner_Run(t *testing.T) {
@@ -983,7 +985,7 @@ func TestRunner_Run(t *testing.T) {
 					}, {
 						Name:       "missing-namespace",
 						Object:     "object.yaml",
-						Assertions: []Assertion{{Violations: gator.IntStrFromStr("yes"), Message: pointer.String("missing Namespace")}},
+						Assertions: []Assertion{{Violations: gator.IntStrFromStr("yes"), Message: ptr.To[string]("missing Namespace")}},
 					}},
 				}},
 			},
@@ -1034,7 +1036,7 @@ func TestRunner_Run(t *testing.T) {
 							{
 								Name:       "user doesn't begin with \"system:\"",
 								Object:     "non-system-ar.yaml",
-								Assertions: []Assertion{{Violations: gator.IntStrFromStr("yes"), Message: pointer.String("username is not allowed to perform this operation")}},
+								Assertions: []Assertion{{Violations: gator.IntStrFromStr("yes"), Message: ptr.To[string]("username is not allowed to perform this operation")}},
 							},
 						},
 					},
@@ -1155,7 +1157,7 @@ func TestRunner_Run(t *testing.T) {
 							{Name: "invalid admission review object", Error: gator.ErrInvalidK8sAdmissionReview},
 							{Name: "missing admission request object", Error: gator.ErrMissingK8sAdmissionRequest},
 							{Name: "no objects to review", Error: gator.ErrNoObjectForReview},
-							{Name: "no oldObject on delete", Error: gator.ErrNilOldObject},
+							{Name: "no oldObject on delete", Error: &clienterrors.ErrorMap{target.Name: constraintclient.ErrReview}},
 						},
 					},
 					{
@@ -1168,12 +1170,71 @@ func TestRunner_Run(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "expansion system",
+			suite: Suite{
+				Tests: []Test{
+					{
+						Name:       "check custom field with expansion system",
+						Template:   "template.yaml",
+						Constraint: "constraint.yaml",
+						Expansion:  "expansion.yaml",
+						Cases: []*Case{
+							{
+								Name:       "Foo Template object",
+								Object:     "foo-template.yaml",
+								Assertions: []Assertion{{Message: ptr.To[string]("foo object has restricted custom field")}},
+							},
+						},
+					},
+					{
+						Name:       "check custom field without expansion system",
+						Template:   "template.yaml",
+						Constraint: "constraint.yaml",
+						Cases: []*Case{
+							{
+								Name:       "Foo Template object",
+								Object:     "foo-template.yaml",
+								Assertions: []Assertion{{Violations: gator.IntStrFromStr("no")}},
+							},
+						},
+					},
+				},
+			},
+			f: fstest.MapFS{
+				"template.yaml": &fstest.MapFile{
+					Data: []byte(fixtures.TemplateRestrictCustomField),
+				},
+				"constraint.yaml": &fstest.MapFile{
+					Data: []byte(fixtures.ConstraintRestrictCustomField),
+				},
+				"foo-template.yaml": &fstest.MapFile{
+					Data: []byte(fixtures.ObjectFooTemplate),
+				},
+				"expansion.yaml": &fstest.MapFile{
+					Data: []byte(fixtures.ExpansionRestrictCustomField),
+				},
+			},
+			want: SuiteResult{
+				TestResults: []TestResult{
+					{
+						Name: "check custom field with expansion system",
+						CaseResults: []CaseResult{
+							{Name: "Foo Template object"},
+						},
+					},
+					{
+						Name: "check custom field without expansion system",
+						CaseResults: []CaseResult{
+							{Name: "Foo Template object"},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
-		// Required for parallel tests.
-		tc := tc
-
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1194,7 +1255,7 @@ func TestRunner_Run(t *testing.T) {
 			if diff := cmp.Diff(tc.want, got, cmpopts.EquateErrors(), cmpopts.EquateEmpty(),
 				cmpopts.IgnoreFields(SuiteResult{}, "Runtime"), cmpopts.IgnoreFields(TestResult{}, "Runtime"), cmpopts.IgnoreFields(CaseResult{}, "Runtime"),
 			); diff != "" {
-				t.Errorf(diff)
+				t.Errorf("%s", diff)
 			}
 		})
 	}
@@ -1207,7 +1268,7 @@ func TestRunner_Run_ClientError(t *testing.T) {
 		TestResults: []TestResult{{Error: gator.ErrCreatingClient}},
 	}
 
-	runner, err := NewRunner(fstest.MapFS{}, func(includeTrace bool) (gator.Client, error) {
+	runner, err := NewRunner(fstest.MapFS{}, func(_ bool, _ bool) (gator.Client, error) {
 		return nil, errors.New("error")
 	})
 	if err != nil {
@@ -1306,7 +1367,7 @@ func TestRunner_RunCase(t *testing.T) {
 			constraint: fixtures.ConstraintAlwaysValidate,
 			object:     fixtures.Object,
 			assertions: []Assertion{{
-				Message: pointer.String("first message"),
+				Message: ptr.To[string]("first message"),
 			}},
 			want: CaseResult{
 				Error: gator.ErrNumViolations,
@@ -1381,7 +1442,7 @@ func TestRunner_RunCase(t *testing.T) {
 			constraint: fixtures.ConstraintAlwaysValidate,
 			object:     fixtures.Object,
 			assertions: []Assertion{{
-				Message: pointer.String("never validate"),
+				Message: ptr.To[string]("never validate"),
 			}},
 			want: CaseResult{
 				Error: gator.ErrNumViolations,
@@ -1393,7 +1454,7 @@ func TestRunner_RunCase(t *testing.T) {
 			constraint: fixtures.ConstraintNeverValidate,
 			object:     fixtures.Object,
 			assertions: []Assertion{{
-				Message: pointer.String("[enrv]+ [adeiltv]+"),
+				Message: ptr.To[string]("[enrv]+ [adeiltv]+"),
 			}},
 			want: CaseResult{},
 		},
@@ -1403,7 +1464,7 @@ func TestRunner_RunCase(t *testing.T) {
 			constraint: fixtures.ConstraintNeverValidate,
 			object:     fixtures.Object,
 			assertions: []Assertion{{
-				Message: pointer.String("never validate [("),
+				Message: ptr.To[string]("never validate [("),
 			}},
 			want: CaseResult{
 				Error: gator.ErrInvalidRegex,
@@ -1415,7 +1476,7 @@ func TestRunner_RunCase(t *testing.T) {
 			constraint: fixtures.ConstraintNeverValidate,
 			object:     fixtures.Object,
 			assertions: []Assertion{{
-				Message: pointer.String("[enrv]+x [adeiltv]+"),
+				Message: ptr.To[string]("[enrv]+x [adeiltv]+"),
 			}},
 			want: CaseResult{
 				Error: gator.ErrNumViolations,
@@ -1438,9 +1499,9 @@ func TestRunner_RunCase(t *testing.T) {
 			constraint: fixtures.ConstraintNeverValidateTwice,
 			object:     fixtures.Object,
 			assertions: []Assertion{{
-				Message: pointer.String("first message"),
+				Message: ptr.To[string]("first message"),
 			}, {
-				Message: pointer.String("second message"),
+				Message: ptr.To[string]("second message"),
 			}},
 			want: CaseResult{},
 		},
@@ -1451,10 +1512,10 @@ func TestRunner_RunCase(t *testing.T) {
 			object:     fixtures.Object,
 			assertions: []Assertion{{
 				Violations: gator.IntStrFromInt(1),
-				Message:    pointer.String("first message"),
+				Message:    ptr.To[string]("first message"),
 			}, {
 				Violations: gator.IntStrFromInt(1),
-				Message:    pointer.String("second message"),
+				Message:    ptr.To[string]("second message"),
 			}},
 			want: CaseResult{},
 		},
@@ -1464,7 +1525,7 @@ func TestRunner_RunCase(t *testing.T) {
 			constraint: fixtures.ConstraintNeverValidateTwice,
 			object:     fixtures.Object,
 			assertions: []Assertion{{
-				Message: pointer.String("[cdefinorst]+ [aegms]+"),
+				Message: ptr.To[string]("[cdefinorst]+ [aegms]+"),
 			}},
 			want: CaseResult{},
 		},
@@ -1475,7 +1536,7 @@ func TestRunner_RunCase(t *testing.T) {
 			object:     fixtures.Object,
 			assertions: []Assertion{{
 				Violations: gator.IntStrFromInt(2),
-				Message:    pointer.String("[cdefinorst]+ [aegms]+"),
+				Message:    ptr.To[string]("[cdefinorst]+ [aegms]+"),
 			}},
 			want: CaseResult{},
 		},
@@ -1485,9 +1546,9 @@ func TestRunner_RunCase(t *testing.T) {
 			constraint: fixtures.ConstraintNeverValidateTwice,
 			object:     fixtures.Object,
 			assertions: []Assertion{{
-				Message: pointer.String("first message"),
+				Message: ptr.To[string]("first message"),
 			}, {
-				Message: pointer.String("third message"),
+				Message: ptr.To[string]("third message"),
 			}},
 			want: CaseResult{
 				Error: gator.ErrNumViolations,
@@ -1527,9 +1588,6 @@ func TestRunner_RunCase(t *testing.T) {
 	)
 
 	for _, tc := range testCases {
-		// Required for parallel tests.
-		tc := tc
-
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1569,7 +1627,7 @@ func TestRunner_RunCase(t *testing.T) {
 			if diff := cmp.Diff(want, got, cmpopts.EquateErrors(), cmpopts.EquateEmpty(),
 				cmpopts.IgnoreFields(SuiteResult{}, "Runtime"), cmpopts.IgnoreFields(TestResult{}, "Runtime"), cmpopts.IgnoreFields(CaseResult{}, "Runtime"),
 			); diff != "" {
-				t.Errorf(diff)
+				t.Errorf("%s", diff)
 			}
 		})
 	}

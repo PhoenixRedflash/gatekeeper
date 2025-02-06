@@ -42,8 +42,15 @@
       "collapsed": false,
       "items": [
         "operations",
-        "performance-tuning"
+        "performance-tuning",
+        "opa-versions"
       ]
+    },
+    {
+      "type": "category",
+      "label": "Concepts",
+      "collapsed": false,
+      "items": ["mutation-background"]
     },
     {
       "type": "category",

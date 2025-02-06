@@ -16,6 +16,8 @@ limitations under the License.
 package main
 
 import (
+	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"flag"
@@ -27,50 +29,54 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/open-policy-agent/gatekeeper/pkg/expansion"
-	// set GOMAXPROCS to the number of container cores, if known.
-	_ "go.uber.org/automaxprocs"
-
 	"github.com/go-logr/zapr"
 	"github.com/open-policy-agent/cert-controller/pkg/rotator"
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
-	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/local"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/rego"
 	frameworksexternaldata "github.com/open-policy-agent/frameworks/constraint/pkg/externaldata"
-	api "github.com/open-policy-agent/gatekeeper/apis"
-	configv1alpha1 "github.com/open-policy-agent/gatekeeper/apis/config/v1alpha1"
-	mutationsv1alpha1 "github.com/open-policy-agent/gatekeeper/apis/mutations/v1alpha1"
-	mutationsv1beta1 "github.com/open-policy-agent/gatekeeper/apis/mutations/v1beta1"
-	statusv1beta1 "github.com/open-policy-agent/gatekeeper/apis/status/v1beta1"
-	"github.com/open-policy-agent/gatekeeper/pkg/audit"
-	"github.com/open-policy-agent/gatekeeper/pkg/controller"
-	"github.com/open-policy-agent/gatekeeper/pkg/controller/config/process"
-	"github.com/open-policy-agent/gatekeeper/pkg/externaldata"
-	"github.com/open-policy-agent/gatekeeper/pkg/metrics"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation"
-	"github.com/open-policy-agent/gatekeeper/pkg/operations"
-	"github.com/open-policy-agent/gatekeeper/pkg/readiness"
-	"github.com/open-policy-agent/gatekeeper/pkg/target"
-	"github.com/open-policy-agent/gatekeeper/pkg/upgrade"
-	"github.com/open-policy-agent/gatekeeper/pkg/util"
-	"github.com/open-policy-agent/gatekeeper/pkg/version"
-	"github.com/open-policy-agent/gatekeeper/pkg/watch"
-	"github.com/open-policy-agent/gatekeeper/pkg/webhook"
-	"github.com/open-policy-agent/gatekeeper/third_party/sigs.k8s.io/controller-runtime/pkg/dynamiccache"
+	api "github.com/open-policy-agent/gatekeeper/v3/apis"
+	configv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/config/v1alpha1"
+	expansionv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/expansion/v1alpha1"
+	expansionv1beta1 "github.com/open-policy-agent/gatekeeper/v3/apis/expansion/v1beta1"
+	mutationsv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/mutations/v1alpha1"
+	mutationsv1beta1 "github.com/open-policy-agent/gatekeeper/v3/apis/mutations/v1beta1"
+	statusv1beta1 "github.com/open-policy-agent/gatekeeper/v3/apis/status/v1beta1"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/audit"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/cachemanager"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller/config/process"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/drivers/k8scel"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/expansion"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/externaldata"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/metrics"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/operations"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/pubsub"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness/pruner"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/syncutil"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/target"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/upgrade"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/version"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/watch"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/webhook"
+	_ "go.uber.org/automaxprocs" // set GOMAXPROCS to the number of container cores, if known.
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
-	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	crzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
-	// +kubebuilder:scaffold:imports
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	crWebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
 )
 
 const (
@@ -93,21 +99,23 @@ var (
 )
 
 var (
-	logFile              = flag.String("log-file", "", "Log to file, if specified. Default is to log to stderr.")
-	logLevel             = flag.String("log-level", "INFO", "Minimum log level. For example, DEBUG, INFO, WARNING, ERROR. Defaulted to INFO if unspecified.")
-	logLevelKey          = flag.String("log-level-key", "level", "JSON key for the log level field, defaults to `level`")
-	logLevelEncoder      = flag.String("log-level-encoder", "lower", "Encoder for the value of the log level field. Valid values: [`lower`, `capital`, `color`, `capitalcolor`], default: `lower`")
-	healthAddr           = flag.String("health-addr", ":9090", "The address to which the health endpoint binds.")
-	metricsAddr          = flag.String("metrics-addr", "0", "The address the metric endpoint binds to.")
-	port                 = flag.Int("port", 443, "port for the server. defaulted to 443 if unspecified ")
-	host                 = flag.String("host", "", "the host address the webhook server listens on. defaults to all addresses.")
-	certDir              = flag.String("cert-dir", "/certs", "The directory where certs are stored, defaults to /certs")
-	disableCertRotation  = flag.Bool("disable-cert-rotation", false, "disable automatic generation and rotation of webhook TLS certificates/keys")
-	enableProfile        = flag.Bool("enable-pprof", false, "enable pprof profiling")
-	profilePort          = flag.Int("pprof-port", 6060, "port for pprof profiling. defaulted to 6060 if unspecified")
-	certServiceName      = flag.String("cert-service-name", "gatekeeper-webhook-service", "The service name used to generate the TLS cert's hostname. Defaults to gatekeeper-webhook-service")
-	enableTLSHealthcheck = flag.Bool("enable-tls-healthcheck", false, "enable probing webhook API with certificate stored in certDir")
-	disabledBuiltins     = util.NewFlagSet()
+	logFile                              = flag.String("log-file", "", "Log to file, if specified. Default is to log to stderr.")
+	logLevel                             = flag.String("log-level", "INFO", "Minimum log level. For example, DEBUG, INFO, WARNING, ERROR. Defaulted to INFO if unspecified.")
+	logLevelKey                          = flag.String("log-level-key", "level", "JSON key for the log level field, defaults to `level`")
+	logLevelEncoder                      = flag.String("log-level-encoder", "lower", "Encoder for the value of the log level field. Valid values: [`lower`, `capital`, `color`, `capitalcolor`], default: `lower`")
+	healthAddr                           = flag.String("health-addr", ":9090", "The address to which the health endpoint binds.")
+	metricsAddr                          = flag.String("metrics-addr", "0", "The address the metric endpoint binds to.")
+	port                                 = flag.Int("port", 443, "port for the server. defaulted to 443 if unspecified ")
+	host                                 = flag.String("host", "", "the host address the webhook server listens on. defaults to all addresses.")
+	certDir                              = flag.String("cert-dir", "/certs", "The directory where certs are stored, defaults to /certs")
+	disableCertRotation                  = flag.Bool("disable-cert-rotation", false, "disable automatic generation and rotation of webhook TLS certificates/keys")
+	enableProfile                        = flag.Bool("enable-pprof", false, "enable pprof profiling")
+	profilePort                          = flag.Int("pprof-port", 6060, "port for pprof profiling. defaulted to 6060 if unspecified")
+	certServiceName                      = flag.String("cert-service-name", "gatekeeper-webhook-service", "The service name used to generate the TLS cert's hostname. Defaults to gatekeeper-webhook-service")
+	enableTLSHealthcheck                 = flag.Bool("enable-tls-healthcheck", false, "enable probing webhook API with certificate stored in certDir")
+	disabledBuiltins                     = util.NewFlagSet()
+	enableK8sCel                         = flag.Bool("enable-k8s-native-validation", true, "enable the validating admission policy driver")
+	externaldataProviderResponseCacheTTL = flag.Duration("external-data-provider-response-cache-ttl", 3*time.Minute, "TTL for the external data provider response cache. Specify the duration in 'h', 'm', or 's' for hours, minutes, or seconds respectively. Defaults to 3 minutes if unspecified. Setting the TTL to 0 disables the cache.")
 )
 
 func init() {
@@ -119,6 +127,8 @@ func init() {
 	_ = statusv1beta1.AddToScheme(scheme)
 	_ = mutationsv1alpha1.AddToScheme(scheme)
 	_ = mutationsv1beta1.AddToScheme(scheme)
+	_ = expansionv1alpha1.AddToScheme(scheme)
+	_ = expansionv1beta1.AddToScheme(scheme)
 
 	// +kubebuilder:scaffold:scheme
 	flag.Var(disabledBuiltins, "disable-opa-builtin", "disable opa built-in function, this flag can be declared more than once.")
@@ -199,7 +209,8 @@ func innerMain() int {
 	}
 
 	config := ctrl.GetConfigOrDie()
-	config.UserAgent = version.GetUserAgent()
+	config.UserAgent = version.GetUserAgent("gatekeeper")
+	setupLog.Info("setting up manager", "user agent", config.UserAgent)
 
 	var webhooks []rotator.WebhookInfo
 	webhooks = webhook.AppendValidationWebhookIfEnabled(webhooks)
@@ -209,18 +220,34 @@ func innerMain() int {
 	// Must be called before ctrl.NewManager!
 	metrics.DisableRESTClientMetrics()
 
+	tlsVersion, err := webhook.ParseTLSVersion(*webhook.TLSMinVersion)
+	if err != nil {
+		setupLog.Error(err, "unable to parse TLS version")
+		return 1
+	}
+	serverOpts := crWebhook.Options{
+		Host:    *host,
+		Port:    *port,
+		CertDir: *certDir,
+		TLSOpts: []func(c *tls.Config){func(c *tls.Config) { c.MinVersion = tlsVersion }},
+	}
+	if *webhook.ClientCAName != "" {
+		serverOpts.ClientCAName = *webhook.ClientCAName
+		serverOpts.TLSOpts = []func(*tls.Config){
+			func(cfg *tls.Config) {
+				cfg.VerifyConnection = webhook.GetCertNameVerifier()
+			},
+		}
+	}
 	mgr, err := ctrl.NewManager(config, ctrl.Options{
-		NewCache:               dynamiccache.New,
-		Scheme:                 scheme,
-		MetricsBindAddress:     *metricsAddr,
-		LeaderElection:         false,
-		Port:                   *port,
-		Host:                   *host,
-		CertDir:                *certDir,
-		HealthProbeBindAddress: *healthAddr,
-		MapperProvider: func(c *rest.Config) (meta.RESTMapper, error) {
-			return apiutil.NewDynamicRESTMapper(c)
+		Scheme: scheme,
+		Metrics: metricsserver.Options{
+			BindAddress: *metricsAddr,
 		},
+		LeaderElection:         false,
+		WebhookServer:          crWebhook.NewServer(serverOpts),
+		HealthProbeBindAddress: *healthAddr,
+		MapperProvider:         apiutil.NewDynamicRESTMapper,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -257,12 +284,8 @@ func innerMain() int {
 		close(setupFinished)
 	}
 
-	// ControllerSwitch will be used to disable controllers during our teardown process,
-	// avoiding conflicts in finalizer cleanup.
-	sw := watch.NewSwitch()
-
 	// Setup tracker and register readiness probe.
-	tracker, err := readiness.SetupTracker(mgr, mutation.Enabled(), *externaldata.ExternalDataEnabled)
+	tracker, err := readiness.SetupTracker(mgr, mutation.Enabled(), *externaldata.ExternalDataEnabled, *expansion.ExpansionEnabled)
 	if err != nil {
 		setupLog.Error(err, "unable to register readiness tracker")
 		return 1
@@ -287,17 +310,19 @@ func innerMain() int {
 
 	// Setup controllers asynchronously, they will block for certificate generation if needed.
 	setupErr := make(chan error)
+	ctx := ctrl.SetupSignalHandler()
 	go func() {
-		setupErr <- setupControllers(mgr, sw, tracker, setupFinished)
+		setupErr <- setupControllers(ctx, mgr, tracker, setupFinished)
 	}()
 
 	setupLog.Info("starting manager")
 	mgrErr := make(chan error)
 	go func() {
-		if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+		if err := mgr.Start(ctx); err != nil {
 			setupLog.Error(err, "problem running manager")
 			mgrErr <- err
 		}
+		close(mgrErr)
 	}()
 
 	// block until either setupControllers or mgr has an error, or mgr exits.
@@ -319,12 +344,7 @@ blockingLoop:
 			break blockingLoop
 		}
 	}
-
-	// Manager stops controllers asynchronously.
-	// Instead, we use ControllerSwitch to synchronously prevent them from doing more work.
-	// This can be removed when finalizer and status teardown is removed.
 	setupLog.Info("disabling controllers...")
-	sw.Stop()
 
 	if hadError {
 		return 1
@@ -332,17 +352,29 @@ blockingLoop:
 	return 0
 }
 
-func setupControllers(mgr ctrl.Manager, sw *watch.ControllerSwitch, tracker *readiness.Tracker, setupFinished chan struct{}) error {
+func setupControllers(ctx context.Context, mgr ctrl.Manager, tracker *readiness.Tracker, setupFinished chan struct{}) error {
 	// Block until the setup (certificate generation) finishes.
 	<-setupFinished
 
 	var providerCache *frameworksexternaldata.ProviderCache
-	args := []local.Arg{local.Tracing(false), local.DisableBuiltins(disabledBuiltins.ToSlice()...)}
+	args := []rego.Arg{rego.Tracing(false), rego.DisableBuiltins(disabledBuiltins.ToSlice()...)}
 	mutationOpts := mutation.SystemOpts{Reporter: mutation.NewStatsReporter()}
 	if *externaldata.ExternalDataEnabled {
 		providerCache = frameworksexternaldata.NewCache()
-		args = append(args, local.AddExternalDataProviderCache(providerCache))
+		args = append(args, rego.AddExternalDataProviderCache(providerCache))
 		mutationOpts.ProviderCache = providerCache
+
+		switch {
+		case *externaldataProviderResponseCacheTTL > 0:
+			providerResponseCache := frameworksexternaldata.NewProviderResponseCache(ctx, *externaldataProviderResponseCacheTTL)
+			args = append(args, rego.AddExternalDataProviderResponseCache(providerResponseCache))
+		case *externaldataProviderResponseCacheTTL == 0:
+			setupLog.Info("external data provider response cache is disabled")
+		default:
+			err := fmt.Errorf("invalid value for external-data-provider-response-cache-ttl: %d", *externaldataProviderResponseCacheTTL)
+			setupLog.Error(err, "unable to create external data provider response cache")
+			return err
+		}
 
 		certFile := filepath.Join(*certDir, certName)
 		keyFile := filepath.Join(*certDir, keyName)
@@ -361,19 +393,41 @@ func setupControllers(mgr ctrl.Manager, sw *watch.ControllerSwitch, tracker *rea
 		}
 
 		// register the client cert watcher to the driver
-		args = append(args, local.EnableExternalDataClientAuth(), local.AddExternalDataClientCertWatcher(certWatcher))
+		args = append(args, rego.EnableExternalDataClientAuth(), rego.AddExternalDataClientCertWatcher(certWatcher))
 
 		// register the client cert watcher to the mutation system
 		mutationOpts.ClientCertWatcher = certWatcher
 	}
-	// initialize OPA
-	driver, err := local.New(args...)
+
+	cfArgs := []constraintclient.Opt{constraintclient.Targets(&target.K8sValidationTarget{})}
+
+	if *enableK8sCel {
+		k8sDriver, err := k8scel.New()
+		if err != nil {
+			setupLog.Error(err, "unable to set up K8s native driver")
+			return err
+		}
+		cfArgs = append(cfArgs, constraintclient.Driver(k8sDriver))
+	}
+
+	driver, err := rego.New(args...)
 	if err != nil {
 		setupLog.Error(err, "unable to set up Driver")
 		return err
 	}
+	cfArgs = append(cfArgs, constraintclient.Driver(driver))
 
-	client, err := constraintclient.NewClient(constraintclient.Targets(&target.K8sValidationTarget{}), constraintclient.Driver(driver))
+	eps := []string{}
+	if operations.IsAssigned(operations.Audit) {
+		eps = append(eps, util.AuditEnforcementPoint)
+	}
+	if operations.IsAssigned(operations.Webhook) {
+		eps = append(eps, util.WebhookEnforcementPoint)
+	}
+
+	cfArgs = append(cfArgs, constraintclient.EnforcementPoints(eps...))
+
+	client, err := constraintclient.NewClient(cfArgs...)
 	if err != nil {
 		setupLog.Error(err, "unable to set up OPA client")
 		return err
@@ -381,12 +435,19 @@ func setupControllers(mgr ctrl.Manager, sw *watch.ControllerSwitch, tracker *rea
 
 	mutationSystem := mutation.NewSystem(mutationOpts)
 	expansionSystem := expansion.NewSystem(mutationSystem)
+	pubsubSystem := pubsub.NewSystem()
 
 	c := mgr.GetCache()
 	dc, ok := c.(watch.RemovableCache)
 	if !ok {
 		err := fmt.Errorf("expected dynamic cache, got: %T", c)
 		setupLog.Error(err, "fetching dynamic cache")
+		return err
+	}
+
+	setupLog.Info("setting up metrics")
+	if err := metrics.AddToManager(mgr); err != nil {
+		setupLog.Error(err, "unable to register metrics with the manager")
 		return err
 	}
 
@@ -405,17 +466,49 @@ func setupControllers(mgr ctrl.Manager, sw *watch.ControllerSwitch, tracker *rea
 
 	// Setup all Controllers
 	setupLog.Info("setting up controllers")
-	watchSet := watch.NewSet()
-	opts := controller.Dependencies{
-		Opa:              client,
-		WatchManger:      wm,
-		ControllerSwitch: sw,
+
+	// Events ch will be used to receive events from dynamic watches registered
+	// via the registrar below.
+	events := make(chan event.GenericEvent, 1024)
+	reg, err := wm.NewRegistrar(
+		cachemanager.RegistrarName,
+		events)
+	if err != nil {
+		setupLog.Error(err, "unable to set up watch registrar for cache manager")
+		return err
+	}
+
+	syncMetricsCache := syncutil.NewMetricsCache()
+	cm, err := cachemanager.NewCacheManager(&cachemanager.Config{
+		CfClient:         client,
+		SyncMetricsCache: syncMetricsCache,
 		Tracker:          tracker,
 		ProcessExcluder:  processExcluder,
-		MutationSystem:   mutationSystem,
-		ExpansionSystem:  expansionSystem,
-		ProviderCache:    providerCache,
-		WatchSet:         watchSet,
+		Registrar:        reg,
+		Reader:           mgr.GetCache(),
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to create cache manager")
+		return err
+	}
+
+	err = mgr.Add(pruner.NewExpectationsPruner(cm, tracker))
+	if err != nil {
+		setupLog.Error(err, "adding expectations pruner to manager")
+		return err
+	}
+
+	opts := controller.Dependencies{
+		CFClient:        client,
+		WatchManger:     wm,
+		SyncEventsCh:    events,
+		CacheMgr:        cm,
+		Tracker:         tracker,
+		ProcessExcluder: processExcluder,
+		MutationSystem:  mutationSystem,
+		ExpansionSystem: expansionSystem,
+		ProviderCache:   providerCache,
+		PubsubSystem:    pubsubSystem,
 	}
 
 	if err := controller.AddToManager(mgr, &opts); err != nil {
@@ -439,12 +532,13 @@ func setupControllers(mgr ctrl.Manager, sw *watch.ControllerSwitch, tracker *rea
 
 	if operations.IsAssigned(operations.Audit) {
 		setupLog.Info("setting up audit")
-		auditCache := audit.NewAuditCacheLister(mgr.GetCache(), watchSet)
+		auditCache := audit.NewAuditCacheLister(mgr.GetCache(), cm)
 		auditDeps := audit.Dependencies{
 			Client:          client,
 			ProcessExcluder: processExcluder,
 			CacheLister:     auditCache,
 			ExpansionSystem: expansionSystem,
+			PubSubSystem:    pubsubSystem,
 		}
 		if err := audit.AddToManager(mgr, &auditDeps); err != nil {
 			setupLog.Error(err, "unable to register audit with the manager")
@@ -458,11 +552,6 @@ func setupControllers(mgr ctrl.Manager, sw *watch.ControllerSwitch, tracker *rea
 		return err
 	}
 
-	setupLog.Info("setting up metrics")
-	if err := metrics.AddToManager(mgr); err != nil {
-		setupLog.Error(err, "unable to register metrics with the manager")
-		return err
-	}
 	return nil
 }
 

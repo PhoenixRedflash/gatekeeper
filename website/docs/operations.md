@@ -50,7 +50,6 @@ At a high level, this requires:
   * It will also need the ability to write to the webhook secret in Gatekeeper's namespace
 * If you have events enabled, you will need permissions to create events in Gatekeeper's namespace
 
-
 ## Mutating Webhook
 
 __--operation key:__ `mutation-webhook`
@@ -152,6 +151,53 @@ At a high level, this requires:
 
 * The ability to write to all objects in the group `mutations.gatekeeper.sh` (mutators)
 * The ability to read `MutatorPodStatus` objects in Gatekeeper's namespace
+
+## Mutation Controller
+
+__--operation key:__ `mutation-controller`
+
+This operation runs the process responsible for ingesting and registering
+mutators. `mutation-controller` is run implicitly with the `mutation-webhook`
+and `mutation-status` operations, and is redundant if any of the 2
+aforementioned operations are already specified. 
+
+If the `webhook` or `audit` operation is used in isolation without the `mutation-webhook`
+or `mutation-status` operations, then the `mutation-controller` operation is
+required for mutation to work with [workload expansion](workload-resources.md).
+
+### Required Behaviors:
+
+At a high level, this requires:
+
+* Ingesting Mutator objects
+
+### Permissions Required
+
+* The ability to read all objects in the group `mutations.gatekeeper.sh` (mutators)
+
+## Generation
+
+__--operation key:__ `generate`
+
+This operation enables CRD and VAP/VAPB generation.
+
+To avoid write contention, the Generate operation should be run as a singleton.
+
+### Required Behaviors
+
+At a high level, this requires:
+
+* Creating CRDs for a corresponding constraint template
+* Creating ValidatingAdmissionPolicies for ConstraintTemplates
+* Creating ValidatingAdmissionPolicyBindings for Constraints
+
+### Permissions Required
+
+* The ability to read all `ConstraintTemplate` objects
+* The ability to create CRDs (unfortunately RBAC doesn't have the syntax to scope this down to just CRDs in the `constraints.gatekeeper.sh` group)
+* The ability to read all `Constraint` resources (members of the group `constraints.gatekeeper.sh`)
+* The ability to create `ValidatingAdmissionPolicy` objects
+* The ability to create `ValidatingAdmissionPolicyBinding` objects
 
 # A Note on Permissions
 

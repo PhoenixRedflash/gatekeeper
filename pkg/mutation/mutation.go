@@ -15,8 +15,8 @@ package mutation
 import (
 	"flag"
 
-	"github.com/open-policy-agent/gatekeeper/pkg/logging"
-	"github.com/open-policy-agent/gatekeeper/pkg/operations"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/logging"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/operations"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -34,5 +34,5 @@ func init() {
 
 // Enabled indicates if the mutation feature is enabled.
 func Enabled() bool {
-	return operations.IsAssigned(operations.MutationStatus) || operations.IsAssigned(operations.MutationWebhook)
+	return operations.IsAssigned(operations.MutationStatus) || operations.IsAssigned(operations.MutationWebhook) || operations.IsAssigned(operations.MutationController)
 }

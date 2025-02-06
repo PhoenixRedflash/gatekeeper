@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/path/parser"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/path/parser"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -38,8 +38,8 @@ type errorMutator struct {
 
 var _ types.Mutator = &errorMutator{}
 
-func (e errorMutator) Matches(*types.Mutable) bool {
-	return true
+func (e errorMutator) Matches(*types.Mutable) (bool, error) {
+	return true, nil
 }
 
 func (e errorMutator) Mutate(*types.Mutable) (bool, error) {
@@ -59,7 +59,7 @@ func (e errorMutator) HasDiff(types.Mutator) bool {
 }
 
 func (e errorMutator) DeepCopy() types.Mutator {
-	return errorMutator{err: fmt.Errorf(e.err.Error())}
+	return errorMutator{err: fmt.Errorf("%w", e.err)}
 }
 
 func (e errorMutator) Value(_ types.MetadataGetter) (interface{}, error) {

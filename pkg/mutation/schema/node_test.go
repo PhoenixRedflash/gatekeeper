@@ -6,8 +6,8 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/path/parser"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/path/parser"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -524,7 +524,7 @@ func TestNode_Remove(t *testing.T) {
 			}
 			gotConflictBefore := root.GetConflicts(pCheck.Nodes, Unknown)
 			if diff := cmp.Diff(tc.wantConflictBefore, gotConflictBefore, cmpopts.EquateEmpty()); diff != "" {
-				t.Errorf(diff)
+				t.Errorf("%s", diff)
 			}
 
 			for _, toRemove := range tc.toRemove {
@@ -537,7 +537,7 @@ func TestNode_Remove(t *testing.T) {
 
 			gotConflictAfter := root.GetConflicts(pCheck.Nodes, Unknown)
 			if diff := cmp.Diff(tc.wantConflictAfter, gotConflictAfter, cmpopts.EquateEmpty()); diff != "" {
-				t.Errorf(diff)
+				t.Errorf("%s", diff)
 			}
 		})
 	}

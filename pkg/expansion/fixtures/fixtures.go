@@ -2,7 +2,7 @@ package fixtures
 
 const (
 	TempExpDeploymentExpandsPods = `
-apiVersion: expansion.gatekeeper.sh/v1alpha1
+apiVersion: expansion.gatekeeper.sh/v1beta1
 kind: ExpansionTemplate
 metadata:
   name: expand-deployments
@@ -18,8 +18,79 @@ spec:
     version: "v1"
 `
 
+	TempExpReplicaDeploymentExpandsPods = `
+apiVersion: expansion.gatekeeper.sh/v1beta1
+kind: ExpansionTemplate
+metadata:
+  name: expand-deployments-replicas
+spec:
+  applyTo:
+    - groups: ["apps"]
+      kinds: ["Deployment", "ReplicaSet"]
+      versions: ["v1"]
+  templateSource: "spec.template"
+  generatedGVK:
+    kind: "Pod"
+    group: ""
+    version: "v1"
+`
+
+	TempExpMultipleApplyTo = `
+apiVersion: expansion.gatekeeper.sh/v1beta1
+kind: ExpansionTemplate
+metadata:
+  name: expand-many-things
+spec:
+  applyTo:
+    - groups: ["apps", "traps"]
+      kinds: ["Deployment", "ReplicaSet"]
+      versions: ["v1", "v1beta1"]
+    - groups: [""]
+      kinds: ["CoreKind"]
+      versions: ["v1"]
+  templateSource: "spec.template"
+  generatedGVK:
+    kind: "Pod"
+    group: ""
+    version: "v1"
+`
+
+	TempExpCronJob = `
+apiVersion: expansion.gatekeeper.sh/v1beta1
+kind: ExpansionTemplate
+metadata:
+  name: expand-cronjobs
+spec:
+  applyTo:
+    - groups: ["batch"]
+      kinds: ["CronJob"]
+      versions: ["v1"]
+  templateSource: "spec.jobTemplate"
+  generatedGVK:
+    kind: "Job"
+    group: "batch"
+    version: "v1"
+`
+
+	TempExpJob = `
+apiVersion: expansion.gatekeeper.sh/v1beta1
+kind: ExpansionTemplate
+metadata:
+  name: expand-jobs
+spec:
+  applyTo:
+    - groups: ["batch"]
+      kinds: ["Job"]
+      versions: ["v1"]
+  templateSource: "spec.template"
+  generatedGVK:
+    kind: "Pod"
+    group: ""
+    version: "v1"
+`
+
 	TempExpDeploymentExpandsPodsEnforceDryrun = `
-apiVersion: expansion.gatekeeper.sh/v1alpha1
+apiVersion: expansion.gatekeeper.sh/v1beta1
 kind: ExpansionTemplate
 metadata:
   name: expand-deployments
@@ -43,6 +114,33 @@ metadata:
   name: nginx-deployment
   labels:
     app: nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.14.2
+        ports:
+        - containerPort: '80'
+        args:
+        - "/bin/sh"
+`
+
+	DeploymentNginxWithNs = `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels:
+    app: nginx
+  namespace: not-default
 spec:
   replicas: 3
   selector:
@@ -91,6 +189,7 @@ kind: Pod
 metadata:
   labels:
     app: nginx
+  name: nginx-deployment-pod
   namespace: default
 spec:
   containers:
@@ -108,7 +207,27 @@ kind: Pod
 metadata:
   labels:
     app: nginx
+  name: nginx-deployment-pod
   namespace: default
+spec:
+  containers:
+  - args:
+    - "/bin/sh"
+    image: nginx:1.14.2
+    imagePullPolicy: Always
+    name: nginx
+    ports:
+    - containerPort: '80'
+`
+
+	PodImagePullMutateWithNs = `
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: nginx
+  name: nginx-deployment-pod
+  namespace: not-default
 spec:
   containers:
   - args:
@@ -126,6 +245,7 @@ kind: Pod
 metadata:
   labels:
     app: nginx
+  name: nginx-deployment-pod
   namespace: default
 spec:
   containers:
@@ -145,6 +265,7 @@ metadata:
     app: nginx
   annotations:
     owner: admin
+  name: nginx-deployment-pod
   namespace: default
 spec:
   containers:
@@ -177,6 +298,33 @@ spec:
     kinds:
       - apiGroups: []
         kinds: []
+`
+
+	AssignPullImageWithNsSelector = `
+apiVersion: mutations.gatekeeper.sh/v1alpha1
+kind: Assign
+metadata:
+  name: always-pull-image
+spec:
+  applyTo:
+  - groups: [""]
+    kinds: ["Pod"]
+    versions: ["v1"]
+  location: "spec.containers[name: *].imagePullPolicy"
+  parameters:
+    assign:
+      value: "Always"
+  match:
+    source: "Generated"
+    scope: Namespaced
+    kinds:
+      - apiGroups: []
+        kinds: []
+    namespaceSelector:
+      matchExpressions:
+        - key: admission.gatekeeper.sh/ignore
+          operator: DoesNotExist
+
 `
 
 	AssignPullImageSourceAll = `
@@ -295,7 +443,7 @@ spec:
 `
 
 	TemplateCatExpandsKitten = `
-apiVersion: expansion.gatekeeper.sh/v1alpha1
+apiVersion: expansion.gatekeeper.sh/v1beta1
 kind: ExpansionTemplate
 metadata:
   name: expand-cats-kitten
@@ -313,7 +461,7 @@ spec:
 `
 
 	TemplateCatExpandsPurr = `
-apiVersion: expansion.gatekeeper.sh/v1alpha1
+apiVersion: expansion.gatekeeper.sh/v1beta1
 kind: ExpansionTemplate
 metadata:
   name: expand-cats-purr
@@ -396,6 +544,7 @@ metadata:
     sound: meow
   labels:
     fluffy: extremely
+  name: big-chungus-kitten
   namespace: default
 spec:
   breed: calico
@@ -409,8 +558,68 @@ kind: Purr
 metadata:
   annotations:
     shouldPet: manytimes
+  name: big-chungus-purr
   namespace: default
 spec:
   loud: very
+`
+
+	GeneratorCronJob = `
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: my-cronjob
+spec:
+  schedule: "* * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - args:
+            - "/bin/sh"
+            image: nginx:1.14.2
+            imagePullPolicy: Always
+            name: nginx
+            ports:
+            - containerPort: '80'
+`
+
+	ResultantJob = `
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: my-cronjob-job
+  namespace: default
+spec:
+  template:
+    spec:
+      containers:
+      - args:
+        - "/bin/sh"
+        image: nginx:1.14.2
+        imagePullPolicy: Always
+        name: nginx
+        ports:
+        - containerPort: '80'
+`
+
+	ResultantRecursivePod = `
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    owner: admin
+  name: my-cronjob-job-pod
+  namespace: default
+spec:
+  containers:
+  - args:
+    - "/bin/sh"
+    image: nginx:1.14.2
+    imagePullPolicy: Always
+    name: nginx
+    ports:
+    - containerPort: '80'
 `
 )

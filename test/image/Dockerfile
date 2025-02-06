@@ -1,4 +1,4 @@
-FROM golang:1.19-bullseye as builder
+FROM golang:1.23-bookworm@sha256:3149bc5043fa58cf127fd8db1fdd4e533b6aed5a40d663d4f4ae43d20386665f as builder
 
 ARG BATS_VERSION
 ARG ORAS_VERSION
@@ -7,8 +7,10 @@ ARG KUSTOMIZE_VERSION
 
 ARG TARGETARCH
 
+RUN git config --global --add safe.directory "*"
+
 RUN apt-get update && \
-    apt-get install -y make jq
+    apt-get install -y make jq apt-utils
 
 # Install kustomize
 RUN curl -L -O "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_${TARGETARCH}.tar.gz" &&\

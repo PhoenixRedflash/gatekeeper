@@ -25,29 +25,30 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/open-policy-agent/cert-controller/pkg/rotator"
 	externaldataUnversioned "github.com/open-policy-agent/frameworks/constraint/pkg/apis/externaldata/unversioned"
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
-	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers"
-	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/local"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/client/reviews"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/core/templates"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/externaldata"
 	rtypes "github.com/open-policy-agent/frameworks/constraint/pkg/types"
-	"github.com/open-policy-agent/gatekeeper/apis"
-	mutationsunversioned "github.com/open-policy-agent/gatekeeper/apis/mutations/unversioned"
-	"github.com/open-policy-agent/gatekeeper/pkg/controller/config/process"
-	"github.com/open-policy-agent/gatekeeper/pkg/expansion"
-	"github.com/open-policy-agent/gatekeeper/pkg/keys"
-	"github.com/open-policy-agent/gatekeeper/pkg/logging"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/mutators/assign"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/mutators/assignimage"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/mutators/assignmeta"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/mutators/modifyset"
-	mutationtypes "github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
-	"github.com/open-policy-agent/gatekeeper/pkg/operations"
-	"github.com/open-policy-agent/gatekeeper/pkg/target"
-	"github.com/open-policy-agent/gatekeeper/pkg/util"
+	"github.com/open-policy-agent/gatekeeper/v3/apis"
+	expansionunversioned "github.com/open-policy-agent/gatekeeper/v3/apis/expansion/unversioned"
+	mutationsunversioned "github.com/open-policy-agent/gatekeeper/v3/apis/mutations/unversioned"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller/config/process"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/expansion"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/keys"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/logging"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators/assign"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators/assignimage"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators/assignmeta"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators/modifyset"
+	mutationtypes "github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/operations"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/target"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -91,6 +92,7 @@ func AddPolicyWebhook(mgr manager.Manager, deps Dependencies) error {
 	if err != nil {
 		return err
 	}
+	log := log.WithValues("hookType", "validation")
 	eventBroadcaster := record.NewBroadcaster()
 	kubeClient := kubernetes.NewForConfigOrDie(mgr.GetConfig())
 	eventBroadcaster.StartRecordingToSink(&clientcorev1.EventSinkImpl{Interface: kubeClient.CoreV1().Events("")})
@@ -109,6 +111,7 @@ func AddPolicyWebhook(mgr manager.Manager, deps Dependencies) error {
 			eventRecorder:   recorder,
 			gkNamespace:     util.GetNamespace(),
 		},
+		log: log,
 	}
 	threadCount := *maxServingThreads
 	if threadCount < 1 {
@@ -116,12 +119,7 @@ func AddPolicyWebhook(mgr manager.Manager, deps Dependencies) error {
 	}
 	handler.semaphore = make(chan struct{}, threadCount)
 	wh := &admission.Webhook{Handler: handler}
-	// TODO(https://github.com/open-policy-agent/gatekeeper/issues/661): remove log injection if the race condition in the cited bug is eliminated.
-	// Otherwise we risk having unstable logger names for the webhook.
-	if err := wh.InjectLogger(log); err != nil {
-		return err
-	}
-	congifureWebhookServer(mgr.GetWebhookServer()).Register("/v1/admit", wh)
+	mgr.GetWebhookServer().Register("/v1/admit", wh)
 	return nil
 }
 
@@ -133,23 +131,16 @@ type validationHandler struct {
 	mutationSystem  *mutation.System
 	expansionSystem *expansion.System
 	semaphore       chan struct{}
+	log             logr.Logger
 }
 
 // Handle the validation request
 // nolint: gocritic // Must accept admission.Request as a struct to satisfy Handler interface.
 func (h *validationHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
-	log := log.WithValues("hookType", "validation")
-
 	timeStart := time.Now()
 
 	if isGkServiceAccount(req.AdmissionRequest.UserInfo) {
 		return admission.Allowed("Gatekeeper does not self-manage")
-	}
-
-	if err := util.SetObjectOnDelete(&req); err != nil {
-		vResp := admission.Denied(err.Error())
-		vResp.Result.Code = http.StatusInternalServerError
-		return vResp
 	}
 
 	if userErr, err := h.validateGatekeeperResources(ctx, &req); err != nil {
@@ -170,7 +161,7 @@ func (h *validationHandler) Handle(ctx context.Context, req admission.Request) a
 				isDryRun = "true"
 			}
 			if err := h.reporter.ReportValidationRequest(ctx, requestResponse, isDryRun, time.Since(timeStart)); err != nil {
-				log.Error(err, "failed to report request")
+				h.log.Error(err, "failed to report request")
 			}
 		}
 	}()
@@ -178,7 +169,7 @@ func (h *validationHandler) Handle(ctx context.Context, req admission.Request) a
 	// namespace is excluded from webhook using config
 	isExcludedNamespace, err := h.skipExcludedNamespace(&req.AdmissionRequest, process.Webhook)
 	if err != nil {
-		log.Error(err, "error while excluding namespace")
+		h.log.Error(err, "error while excluding namespace")
 	}
 
 	if isExcludedNamespace {
@@ -188,9 +179,25 @@ func (h *validationHandler) Handle(ctx context.Context, req admission.Request) a
 
 	resp, err := h.reviewRequest(ctx, &req)
 	if err != nil {
-		log.Error(err, "error executing query")
+		h.log.Error(err, "error executing query")
 		requestResponse = errorResponse
 		return admission.Errored(http.StatusInternalServerError, err)
+	}
+
+	if *logStatsAdmission {
+		logging.LogStatsEntries(
+			h.opa,
+			h.log.WithValues(
+				logging.Process, "admission",
+				logging.EventType, "review_response_stats",
+				logging.ResourceGroup, req.AdmissionRequest.Kind.Group,
+				logging.ResourceAPIVersion, req.AdmissionRequest.Kind.Version,
+				logging.ResourceKind, req.AdmissionRequest.Kind.Kind,
+				logging.ResourceNamespace, req.AdmissionRequest.Namespace,
+				logging.RequestUsername, req.AdmissionRequest.UserInfo.Username,
+			),
+			resp.StatsEntries, "admission review request stats",
+		)
 	}
 
 	res := resp.Results()
@@ -230,92 +237,115 @@ func (h *validationHandler) Handle(ctx context.Context, req admission.Request) a
 func (h *validationHandler) getValidationMessages(res []*rtypes.Result, req *admission.Request) ([]string, []string) {
 	var denyMsgs, warnMsgs []string
 	var resourceName string
+	obj := &unstructured.Unstructured{}
+
 	if len(res) > 0 && (*logDenies || *emitAdmissionEvents) {
 		resourceName = req.AdmissionRequest.Name
-		if len(resourceName) == 0 && req.AdmissionRequest.Object.Raw != nil {
-			// On a CREATE operation, the client may omit name and
-			// rely on the server to generate the name.
-			obj := &unstructured.Unstructured{}
+		if req.AdmissionRequest.Object.Raw != nil {
 			if _, _, err := deserializer.Decode(req.AdmissionRequest.Object.Raw, nil, obj); err == nil {
-				resourceName = obj.GetName()
+				// On a CREATE operation, the client may omit name and
+				// rely on the server to generate the name.
+				if len(resourceName) == 0 {
+					resourceName = obj.GetName()
+				}
 			}
 		}
 	}
 	for _, r := range res {
-		if err := util.ValidateEnforcementAction(util.EnforcementAction(r.EnforcementAction)); err != nil {
-			continue
+		var actions []string
+		switch r.EnforcementAction {
+		case string(util.Scoped):
+			for _, action := range r.ScopedEnforcementActions {
+				if err := util.ValidateEnforcementAction(util.EnforcementAction(action), r.Constraint.Object); err != nil {
+					h.log.Error(err, "error validating enforcement action", "skipping enforcement action", action, "constraint", r.Constraint.GetName())
+					continue
+				}
+				actions = append(actions, action)
+			}
+			if len(actions) == 0 {
+				continue
+			}
+		default:
+			if err := util.ValidateEnforcementAction(util.EnforcementAction(r.EnforcementAction), r.Constraint.Object); err != nil {
+				h.log.Error(err, "error validating enforcement action", "skipping enforcement action", r.EnforcementAction, "constraint", r.Constraint.GetName())
+				continue
+			}
 		}
 		if *logDenies {
-			log.WithValues(
+			h.log.WithValues(
 				logging.Process, "admission",
+				logging.Details, r.Metadata["details"],
 				logging.EventType, "violation",
 				logging.ConstraintName, r.Constraint.GetName(),
 				logging.ConstraintGroup, r.Constraint.GroupVersionKind().Group,
 				logging.ConstraintAPIVersion, r.Constraint.GroupVersionKind().Version,
 				logging.ConstraintKind, r.Constraint.GetKind(),
 				logging.ConstraintAction, r.EnforcementAction,
+				logging.ConstraintEnforcementActions, actions,
 				logging.ResourceGroup, req.AdmissionRequest.Kind.Group,
 				logging.ResourceAPIVersion, req.AdmissionRequest.Kind.Version,
 				logging.ResourceKind, req.AdmissionRequest.Kind.Kind,
 				logging.ResourceNamespace, req.AdmissionRequest.Namespace,
 				logging.ResourceName, resourceName,
 				logging.RequestUsername, req.AdmissionRequest.UserInfo.Username,
-			).Info(fmt.Sprintf("denied admission: %s", r.Msg))
+			).Info(
+				fmt.Sprintf("denied admission: %s", r.Msg))
 		}
 		if *emitAdmissionEvents {
 			annotations := map[string]string{
-				logging.Process:              "admission",
-				logging.EventType:            "violation",
-				logging.ConstraintName:       r.Constraint.GetName(),
-				logging.ConstraintGroup:      r.Constraint.GroupVersionKind().Group,
-				logging.ConstraintAPIVersion: r.Constraint.GroupVersionKind().Version,
-				logging.ConstraintKind:       r.Constraint.GetKind(),
-				logging.ConstraintAction:     r.EnforcementAction,
-				logging.ResourceGroup:        req.AdmissionRequest.Kind.Group,
-				logging.ResourceAPIVersion:   req.AdmissionRequest.Kind.Version,
-				logging.ResourceKind:         req.AdmissionRequest.Kind.Kind,
-				logging.ResourceNamespace:    req.AdmissionRequest.Namespace,
-				logging.ResourceName:         resourceName,
-				logging.RequestUsername:      req.AdmissionRequest.UserInfo.Username,
+				logging.Process:                      "admission",
+				logging.EventType:                    "violation",
+				logging.ConstraintName:               r.Constraint.GetName(),
+				logging.ConstraintGroup:              r.Constraint.GroupVersionKind().Group,
+				logging.ConstraintAPIVersion:         r.Constraint.GroupVersionKind().Version,
+				logging.ConstraintKind:               r.Constraint.GetKind(),
+				logging.ConstraintAction:             r.EnforcementAction,
+				logging.ConstraintEnforcementActions: strings.Join(actions, ","),
+				logging.ResourceGroup:                req.AdmissionRequest.Kind.Group,
+				logging.ResourceAPIVersion:           req.AdmissionRequest.Kind.Version,
+				logging.ResourceKind:                 req.AdmissionRequest.Kind.Kind,
+				logging.ResourceNamespace:            req.AdmissionRequest.Namespace,
+				logging.ResourceName:                 resourceName,
+				logging.RequestUsername:              req.AdmissionRequest.UserInfo.Username,
 			}
-			var eventMsg, reason string
-			switch r.EnforcementAction {
-			case string(util.Dryrun):
-				eventMsg = "Dryrun violation"
-				reason = "DryrunViolation"
-			case string(util.Warn):
-				eventMsg = "Admission webhook \"validation.gatekeeper.sh\" raised a warning for this request"
-				reason = "WarningAdmission"
-			default:
-				eventMsg = "Admission webhook \"validation.gatekeeper.sh\" denied request"
-				reason = "FailedAdmission"
+
+			if len(actions) == 0 {
+				actions = append(actions, r.EnforcementAction)
 			}
-			ref := getViolationRef(
-				h.gkNamespace,
-				req.AdmissionRequest.Kind.Kind,
-				resourceName,
-				req.AdmissionRequest.Namespace,
-				r.Constraint.GetKind(),
-				r.Constraint.GetName(),
-				r.Constraint.GetNamespace())
-			h.eventRecorder.AnnotatedEventf(
-				ref,
-				annotations,
-				corev1.EventTypeWarning,
-				reason,
-				"%s, Resource Namespace: %s, Constraint: %s, Message: %s",
-				eventMsg,
-				req.AdmissionRequest.Namespace,
-				r.Constraint.GetName(),
-				r.Msg)
-		}
+			for _, action := range actions {
+				var eventMsg, reason string
+				switch action {
+				case string(util.Dryrun):
+					eventMsg = "Dryrun violation"
+					reason = "DryrunViolation"
+				case string(util.Warn):
+					eventMsg = "Admission webhook \"validation.gatekeeper.sh\" raised a warning for this request"
+					reason = "WarningAdmission"
+				default:
+					eventMsg = "Admission webhook \"validation.gatekeeper.sh\" denied request"
+					reason = "FailedAdmission"
+				}
 
-		if r.EnforcementAction == string(util.Deny) {
-			denyMsgs = append(denyMsgs, fmt.Sprintf("[%s] %s", r.Constraint.GetName(), r.Msg))
-		}
+				ref := getViolationRef(h.gkNamespace, req.AdmissionRequest.Kind.Kind, resourceName, obj.GetNamespace(), obj.GetResourceVersion(), obj.GetUID(), r.Constraint.GetKind(), r.Constraint.GetName(), r.Constraint.GetNamespace(), *admissionEventsInvolvedNamespace)
 
-		if r.EnforcementAction == string(util.Warn) {
-			warnMsgs = append(warnMsgs, fmt.Sprintf("[%s] %s", r.Constraint.GetName(), r.Msg))
+				if *admissionEventsInvolvedNamespace {
+					h.eventRecorder.AnnotatedEventf(ref, annotations, corev1.EventTypeWarning, reason, "%s, Constraint: %s, Message: %s", eventMsg, r.Constraint.GetName(), r.Msg)
+				} else {
+					h.eventRecorder.AnnotatedEventf(ref, annotations, corev1.EventTypeWarning, reason, "%s, Resource Namespace: %s, Constraint: %s, Message: %s", eventMsg, req.AdmissionRequest.Namespace, r.Constraint.GetName(), r.Msg)
+				}
+			}
+		}
+		if len(actions) == 0 {
+			actions = append(actions, r.EnforcementAction)
+		}
+		for _, action := range actions {
+			if action == string(util.Deny) {
+				denyMsgs = append(denyMsgs, fmt.Sprintf("[%s] %s", r.Constraint.GetName(), r.Msg))
+			}
+
+			if action == string(util.Warn) {
+				warnMsgs = append(warnMsgs, fmt.Sprintf("[%s] %s", r.Constraint.GetName(), r.Msg))
+			}
 		}
 	}
 	return denyMsgs, warnMsgs
@@ -324,26 +354,40 @@ func (h *validationHandler) getValidationMessages(res []*rtypes.Result, req *adm
 // validateGatekeeperResources returns whether an issue is user error (vs internal) and any errors
 // validating internal resources.
 func (h *validationHandler) validateGatekeeperResources(ctx context.Context, req *admission.Request) (bool, error) {
-	gvk := req.AdmissionRequest.Kind
+	if !h.isGatekeeperResource(req) {
+		return false, nil
+	}
 
+	if req.Operation == admissionv1.Delete && req.Name == "" {
+		// Allow the general DELETE of resources like "/apis/config.gatekeeper.sh/v1alpha1/namespaces/<ns>/configs"
+		return true, nil
+	}
+
+	if len(req.Name) > 63 {
+		return false, fmt.Errorf("resource cannot have metadata.name larger than 63 char; length: %d", len(req.Name))
+	}
+
+	gvk := req.AdmissionRequest.Kind
 	switch {
 	case gvk.Group == "templates.gatekeeper.sh" && gvk.Kind == "ConstraintTemplate":
 		return h.validateTemplate(ctx, req)
+	case gvk.Group == "expansion.gatekeeper.sh" && gvk.Kind == "ExpansionTemplate":
+		return h.validateExpansionTemplate(req)
 	case gvk.Group == "constraints.gatekeeper.sh":
 		return h.validateConstraint(req)
 	case gvk.Group == "config.gatekeeper.sh" && gvk.Kind == "Config":
 		if err := h.validateConfigResource(req); err != nil {
 			return true, err
 		}
-	case req.AdmissionRequest.Kind.Group == mutationsGroup && req.AdmissionRequest.Kind.Kind == "AssignMetadata":
+	case gvk.Group == mutationsGroup && gvk.Kind == "AssignMetadata":
 		return h.validateAssignMetadata(req)
-	case req.AdmissionRequest.Kind.Group == mutationsGroup && req.AdmissionRequest.Kind.Kind == "Assign":
+	case gvk.Group == mutationsGroup && gvk.Kind == "Assign":
 		return h.validateAssign(req)
-	case req.AdmissionRequest.Kind.Group == mutationsGroup && req.AdmissionRequest.Kind.Kind == "ModifySet":
+	case gvk.Group == mutationsGroup && gvk.Kind == "ModifySet":
 		return h.validateModifySet(req)
-	case req.AdmissionRequest.Kind.Group == mutationsGroup && req.AdmissionRequest.Kind.Kind == "AssignImage":
+	case gvk.Group == mutationsGroup && gvk.Kind == "AssignImage":
 		return h.validateAssignImage(req)
-	case req.AdmissionRequest.Kind.Group == externalDataGroup && req.AdmissionRequest.Kind.Kind == "Provider":
+	case gvk.Group == externalDataGroup && gvk.Kind == "Provider":
 		return h.validateProvider(req)
 	}
 
@@ -372,18 +416,6 @@ func (h *validationHandler) validateTemplate(ctx context.Context, req *admission
 		return true, err
 	}
 
-	// Create a temporary Driver and attempt to add the Template to it. This
-	// ensures the Rego code both parses and compiles.
-	d, err := local.New()
-	if err != nil {
-		return false, fmt.Errorf("unable to create Driver: %w", err)
-	}
-
-	err = d.AddTemplate(ctx, unversioned)
-	if err != nil {
-		return true, err
-	}
-
 	return false, nil
 }
 
@@ -403,7 +435,7 @@ func (h *validationHandler) validateConstraint(req *admission.Request) (bool, er
 	enforcementAction := util.EnforcementAction(enforcementActionString)
 	if found && enforcementAction != "" {
 		if !*disableEnforcementActionValidation {
-			err = util.ValidateEnforcementAction(enforcementAction)
+			err = util.ValidateEnforcementAction(enforcementAction, obj.Object)
 			if err != nil {
 				return false, err
 			}
@@ -411,6 +443,23 @@ func (h *validationHandler) validateConstraint(req *admission.Request) (bool, er
 	} else {
 		return true, nil
 	}
+	return false, nil
+}
+
+func (h *validationHandler) validateExpansionTemplate(req *admission.Request) (bool, error) {
+	obj, _, err := deserializer.Decode(req.AdmissionRequest.Object.Raw, nil, nil)
+	if err != nil {
+		return false, err
+	}
+	unversioned := &expansionunversioned.ExpansionTemplate{}
+	if err := runtimeScheme.Convert(obj, unversioned, nil); err != nil {
+		return false, err
+	}
+	err = expansion.ValidateTemplate(unversioned)
+	if err != nil {
+		return true, err
+	}
+
 	return false, nil
 }
 
@@ -527,29 +576,33 @@ func (h *validationHandler) reviewRequest(ctx context.Context, req *admission.Re
 		return nil, fmt.Errorf("failed to create augmentedReview: %w", err)
 	}
 
-	// Convert the request's generator resource to unstructured for expansion
-	obj := &unstructured.Unstructured{}
-	if _, _, err := deserializer.Decode(req.Object.Raw, nil, obj); err != nil {
-		return nil, fmt.Errorf("error decoding generator resource %s: %w", req.Name, err)
-	}
-	obj.SetNamespace(req.Namespace)
-	obj.SetGroupVersionKind(
-		schema.GroupVersionKind{
-			Group:   req.Kind.Group,
-			Version: req.Kind.Version,
-			Kind:    req.Kind.Kind,
-		})
+	resultants := []*expansion.Resultant{}
+	// Skip the expansion if admissionRequest.Obj is nil.
+	if req.AdmissionRequest.Object.Raw != nil {
+		// Convert the request's generator resource to unstructured for expansion
+		obj := &unstructured.Unstructured{}
+		if _, _, err := deserializer.Decode(req.Object.Raw, nil, obj); err != nil {
+			return nil, fmt.Errorf("error decoding generator resource %s: %w", req.Name, err)
+		}
+		obj.SetNamespace(req.Namespace)
+		obj.SetGroupVersionKind(
+			schema.GroupVersionKind{
+				Group:   req.Kind.Group,
+				Version: req.Kind.Version,
+				Kind:    req.Kind.Kind,
+			})
 
-	// Expand the generator and apply mutators to the resultant resources
-	// The base object is not mutated, so we do not need to specify its source
-	base := &mutationtypes.Mutable{
-		Object:    obj,
-		Namespace: review.Namespace,
-		Username:  req.AdmissionRequest.UserInfo.Username,
-	}
-	resultants, err := h.expansionSystem.Expand(base)
-	if err != nil {
-		return nil, fmt.Errorf("unable to expand object: %w", err)
+		// Expand the generator and apply mutators to the resultant resources
+		// The base object is not mutated, so we do not need to specify its source
+		base := &mutationtypes.Mutable{
+			Object:    obj,
+			Namespace: review.Namespace,
+			Username:  req.AdmissionRequest.UserInfo.Username,
+		}
+		resultants, err = h.expansionSystem.Expand(base)
+		if err != nil {
+			return nil, fmt.Errorf("unable to expand object: %w", err)
+		}
 	}
 
 	trace, dump := h.tracingLevel(ctx, req)
@@ -565,22 +618,23 @@ func (h *validationHandler) reviewRequest(ctx context.Context, req *admission.Re
 		}
 		expansion.OverrideEnforcementAction(res.EnforcementAction, resultantResp)
 		expansion.AggregateResponses(res.TemplateName, resp, resultantResp)
+		expansion.AggregateStats(res.TemplateName, resp, resultantResp)
 	}
 
 	return resp, nil
 }
 
 func (h *validationHandler) review(ctx context.Context, review interface{}, trace bool, dump bool) (*rtypes.Responses, error) {
-	resp, err := h.opa.Review(ctx, review, drivers.Tracing(trace))
+	resp, err := h.opa.Review(ctx, review, reviews.EnforcementPoint(util.WebhookEnforcementPoint), reviews.Tracing(trace), reviews.Stats(*logStatsAdmission))
 	if resp != nil && trace {
-		log.Info(resp.TraceDump())
+		h.log.Info(resp.TraceDump())
 	}
 	if dump {
 		dump, err := h.opa.Dump(ctx)
 		if err != nil {
-			log.Error(err, "dump error")
+			h.log.Error(err, "dump error")
 		} else {
-			log.Info(dump)
+			h.log.Info(dump)
 		}
 	}
 
@@ -597,6 +651,7 @@ func (h *validationHandler) createReviewForRequest(ctx context.Context, req *adm
 	review := &target.AugmentedReview{
 		AdmissionRequest: &req.AdmissionRequest,
 		Source:           mutationtypes.SourceTypeOriginal,
+		IsAdmission:      true,
 	}
 	if req.AdmissionRequest.Namespace != "" {
 		ns := &corev1.Namespace{}
@@ -624,19 +679,29 @@ func createReviewForResultant(obj *unstructured.Unstructured, ns *corev1.Namespa
 	}
 }
 
-func getViolationRef(gkNamespace, rkind, rname, rnamespace, ckind, cname, cnamespace string) *corev1.ObjectReference {
-	return &corev1.ObjectReference{
+func getViolationRef(gkNamespace, rkind, rname, rnamespace, rrv string, ruid types.UID, ckind, cname, cnamespace string, emitInvolvedNamespace bool) *corev1.ObjectReference {
+	enamespace := gkNamespace
+	if emitInvolvedNamespace && len(rnamespace) > 0 {
+		enamespace = rnamespace
+	}
+	ref := &corev1.ObjectReference{
 		Kind:      rkind,
 		Name:      rname,
-		UID:       types.UID(rkind + "/" + rnamespace + "/" + rname + "/" + ckind + "/" + cnamespace + "/" + cname),
-		Namespace: gkNamespace,
+		Namespace: enamespace,
 	}
+	if emitInvolvedNamespace && len(ruid) > 0 && len(rrv) > 0 {
+		ref.UID = ruid
+		ref.ResourceVersion = rrv
+	} else if !emitInvolvedNamespace {
+		ref.UID = types.UID(rkind + "/" + rnamespace + "/" + rname + "/" + ckind + "/" + cnamespace + "/" + cname)
+	}
+	return ref
 }
 
 func AppendValidationWebhookIfEnabled(webhooks []rotator.WebhookInfo) []rotator.WebhookInfo {
 	if operations.IsAssigned(operations.Webhook) {
 		return append(webhooks, rotator.WebhookInfo{
-			Name: VwhName,
+			Name: *VwhName,
 			Type: rotator.Validating,
 		})
 	}

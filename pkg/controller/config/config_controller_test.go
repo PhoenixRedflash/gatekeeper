@@ -17,34 +17,35 @@ package config
 
 import (
 	"fmt"
-	gosync "sync"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/onsi/gomega"
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
-	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/local"
-	configv1alpha1 "github.com/open-policy-agent/gatekeeper/apis/config/v1alpha1"
-	"github.com/open-policy-agent/gatekeeper/pkg/controller/config/process"
-	"github.com/open-policy-agent/gatekeeper/pkg/fakes"
-	"github.com/open-policy-agent/gatekeeper/pkg/readiness"
-	"github.com/open-policy-agent/gatekeeper/pkg/target"
-	"github.com/open-policy-agent/gatekeeper/pkg/util"
-	"github.com/open-policy-agent/gatekeeper/pkg/watch"
-	testclient "github.com/open-policy-agent/gatekeeper/test/clients"
-	"github.com/open-policy-agent/gatekeeper/test/testutils"
-	"github.com/open-policy-agent/gatekeeper/third_party/sigs.k8s.io/controller-runtime/pkg/dynamiccache"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/rego"
+	configv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/config/v1alpha1"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/cachemanager"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller/config/process"
+	syncc "github.com/open-policy-agent/gatekeeper/v3/pkg/controller/sync"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/fakes"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/syncutil"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/target"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/watch"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/wildcard"
+	testclient "github.com/open-policy-agent/gatekeeper/v3/test/clients"
+	"github.com/open-policy-agent/gatekeeper/v3/test/testutils"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/net/context"
-	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
@@ -53,13 +54,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
-
-var expectedRequest = reconcile.Request{NamespacedName: types.NamespacedName{
-	Name:      "config",
-	Namespace: "gatekeeper-system",
-}}
 
 const timeout = time.Second * 20
 
@@ -70,11 +67,10 @@ func setupManager(t *testing.T) (manager.Manager, *watch.Manager) {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 	metrics.Registry = prometheus.NewRegistry()
 	mgr, err := manager.New(cfg, manager.Options{
-		MetricsBindAddress: "0",
-		NewCache:           dynamiccache.New,
-		MapperProvider: func(c *rest.Config) (meta.RESTMapper, error) {
-			return apiutil.NewDynamicRESTMapper(c)
+		Metrics: metricsserver.Options{
+			BindAddress: "0",
 		},
+		MapperProvider: apiutil.NewDynamicRESTMapper,
 	})
 	if err != nil {
 		t.Fatalf("setting up controller manager: %s", err)
@@ -95,7 +91,11 @@ func setupManager(t *testing.T) (manager.Manager, *watch.Manager) {
 }
 
 func TestReconcile(t *testing.T) {
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	defer cancelFunc()
+
 	g := gomega.NewGomegaWithT(t)
+
 	instance := &configv1alpha1.Config{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "config",
@@ -110,60 +110,61 @@ func TestReconcile(t *testing.T) {
 			},
 			Match: []configv1alpha1.MatchEntry{
 				{
-					ExcludedNamespaces: []util.Wildcard{"foo"},
+					ExcludedNamespaces: []wildcard.Wildcard{"foo"},
 					Processes:          []string{"*"},
 				},
 				{
-					ExcludedNamespaces: []util.Wildcard{"bar"},
+					ExcludedNamespaces: []wildcard.Wildcard{"bar"},
 					Processes:          []string{"audit", "webhook"},
 				},
 			},
 		},
 	}
-
-	// Set up the Manager and Controller.  Wrap the Controller Reconcile function so it writes each request to a
-	// channel when it is finished.
 	mgr, wm := setupManager(t)
 	c := testclient.NewRetryClient(mgr.GetClient())
 
-	// initialize OPA
-	driver, err := local.New(local.Tracing(true))
-	if err != nil {
-		t.Fatalf("unable to set up Driver: %v", err)
-	}
+	dataClient := &fakes.FakeCfClient{}
 
-	opaClient, err := constraintclient.NewClient(constraintclient.Targets(&target.K8sValidationTarget{}), constraintclient.Driver(driver))
-	if err != nil {
-		t.Fatalf("unable to set up OPA client: %s", err)
-	}
-
-	cs := watch.NewSwitch()
-	tracker, err := readiness.SetupTracker(mgr, false, false)
+	tracker, err := readiness.SetupTracker(mgr, false, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	processExcluder := process.Get()
 	processExcluder.Add(instance.Spec.Match)
 	events := make(chan event.GenericEvent, 1024)
-	watchSet := watch.NewSet()
-	rec, _ := newReconciler(mgr, opaClient, wm, cs, tracker, processExcluder, events, watchSet, events)
+	syncMetricsCache := syncutil.NewMetricsCache()
+	reg, err := wm.NewRegistrar(
+		cachemanager.RegistrarName,
+		events)
+	require.NoError(t, err)
+	cacheManager, err := cachemanager.NewCacheManager(&cachemanager.Config{
+		CfClient:         dataClient,
+		SyncMetricsCache: syncMetricsCache,
+		Tracker:          tracker,
+		ProcessExcluder:  processExcluder,
+		Registrar:        reg,
+		Reader:           c,
+	})
+	require.NoError(t, err)
 
-	recFn, requests := SetupTestReconcile(rec)
-	err = add(mgr, recFn)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// start the cache manager
+	go func() {
+		assert.NoError(t, cacheManager.Start(ctx))
+	}()
 
-	ctx, cancelFunc := context.WithCancel(context.Background())
+	pod := fakes.Pod(
+		fakes.WithNamespace("gatekeeper-system"),
+		fakes.WithName("no-pod"),
+	)
+
+	rec, err := newReconciler(mgr, cacheManager, tracker, func(context.Context) (*v1.Pod, error) { return pod, nil })
+	require.NoError(t, err)
+
+	// Wrap the Controller Reconcile function so it writes each request to a map when it is finished reconciling.
+	recFn, requests := testutils.SetupTestReconcile(rec)
+	require.NoError(t, add(mgr, recFn))
+
 	testutils.StartManager(ctx, t, mgr)
-	once := gosync.Once{}
-	testMgrStopped := func() {
-		once.Do(func() {
-			cancelFunc()
-		})
-	}
-
-	defer testMgrStopped()
 
 	// Create the Config object and expect the Reconcile to be created
 	err = c.Create(ctx, instance)
@@ -178,10 +179,20 @@ func TestReconcile(t *testing.T) {
 			t.Fatal(err)
 		}
 	}()
-	g.Eventually(requests, timeout).Should(gomega.Receive(gomega.Equal(expectedRequest)))
+	g.Eventually(func() bool {
+		expectedReq := reconcile.Request{NamespacedName: types.NamespacedName{
+			Name:      "config",
+			Namespace: "gatekeeper-system",
+		}}
+		_, ok := requests.Load(expectedReq)
 
+		return ok
+	}).WithTimeout(timeout).Should(gomega.BeTrue())
+
+	g.Eventually(func() int {
+		return len(wm.GetManagedGVK())
+	}).WithTimeout(timeout).ShouldNot(gomega.Equal(0))
 	gvks := wm.GetManagedGVK()
-	g.Eventually(len(gvks), timeout).ShouldNot(gomega.Equal(0))
 
 	wantGVKs := []schema.GroupVersionKind{
 		{Group: "", Version: "v1", Kind: "Namespace"},
@@ -257,8 +268,27 @@ func TestReconcile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	testMgrStopped()
-	cs.Stop()
+	fooNs := &v1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "foo",
+		},
+	}
+	require.NoError(t, c.Create(ctx, fooNs))
+	fooPod.Object["spec"] = map[string]interface{}{
+		"containers": []map[string]interface{}{
+			{
+				"name":  "foo-container",
+				"image": "foo-image",
+			},
+		},
+	}
+
+	// directly call cacheManager to avoid any race condition
+	// between adding the pod and the sync_controller calling AddObject
+	require.NoError(t, cacheManager.AddObject(ctx, fooPod))
+
+	// fooPod should be namespace excluded, hence not added to the cache
+	require.False(t, dataClient.Contains(map[fakes.CfDataKey]interface{}{{Gvk: fooPod.GroupVersionKind(), Key: "default"}: struct{}{}}))
 }
 
 // tests that expectations for sync only resource gets canceled when it gets deleted.
@@ -275,9 +305,8 @@ func TestConfig_DeleteSyncResources(t *testing.T) {
 	// create the Config object and expect the Reconcile to be created when controller starts
 	instance := &configv1alpha1.Config{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:       "config",
-			Namespace:  "gatekeeper-system",
-			Finalizers: []string{finalizerName},
+			Name:      "config",
+			Namespace: "gatekeeper-system",
 		},
 		Spec: configv1alpha1.ConfigSpec{
 			Sync: configv1alpha1.Sync{
@@ -287,7 +316,10 @@ func TestConfig_DeleteSyncResources(t *testing.T) {
 			},
 		},
 	}
-	ctx := context.Background()
+
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	defer cancelFunc()
+
 	err := c.Create(ctx, instance)
 	if err != nil {
 		t.Fatal(err)
@@ -306,8 +338,8 @@ func TestConfig_DeleteSyncResources(t *testing.T) {
 		fakes.WithNamespace("default"),
 		fakes.WithName("testpod"),
 	)
-	pod.Spec = corev1.PodSpec{
-		Containers: []corev1.Container{
+	pod.Spec = v1.PodSpec{
+		Containers: []v1.Container{
 			{
 				Name:  "nginx",
 				Image: "nginx",
@@ -321,7 +353,7 @@ func TestConfig_DeleteSyncResources(t *testing.T) {
 	}
 
 	// set up tracker
-	tracker, err := readiness.SetupTracker(mgr, false, false)
+	tracker, err := readiness.SetupTracker(mgr, false, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,20 +362,12 @@ func TestConfig_DeleteSyncResources(t *testing.T) {
 	events := make(chan event.GenericEvent, 1024)
 
 	// set up controller and add it to the manager
-	err = setupController(mgr, wm, tracker, events)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, err = setupController(ctx, mgr, wm, tracker, events, c, false)
+	require.NoError(t, err, "failed to set up controller")
 
 	// start manager that will start tracker and controller
-	ctx, cancelFunc := context.WithCancel(context.Background())
 	testutils.StartManager(ctx, t, mgr)
-	once := gosync.Once{}
-	defer func() {
-		once.Do(func() {
-			cancelFunc()
-		})
-	}()
+
 	gvk := schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Pod"}
 
 	// get the object tracker for the synconly pod resource
@@ -380,35 +404,79 @@ func TestConfig_DeleteSyncResources(t *testing.T) {
 	}, timeout).Should(gomega.BeTrue())
 }
 
-func setupController(mgr manager.Manager, wm *watch.Manager, tracker *readiness.Tracker, events <-chan event.GenericEvent) error {
-	// initialize OPA
-	driver, err := local.New(local.Tracing(true))
-	if err != nil {
-		return fmt.Errorf("unable to set up Driver: %w", err)
-	}
+func setupController(ctx context.Context, mgr manager.Manager, wm *watch.Manager, tracker *readiness.Tracker, events chan event.GenericEvent, reader client.Reader, useFakeClient bool) (cachemanager.CFDataClient, error) {
+	// initialize constraint framework data client
+	var client cachemanager.CFDataClient
+	if useFakeClient {
+		client = &fakes.FakeCfClient{}
+	} else {
+		driver, err := rego.New(rego.Tracing(true))
+		if err != nil {
+			return nil, fmt.Errorf("unable to set up Driver: %w", err)
+		}
 
-	opaClient, err := constraintclient.NewClient(constraintclient.Targets(&target.K8sValidationTarget{}), constraintclient.Driver(driver))
-	if err != nil {
-		return fmt.Errorf("unable to set up OPA backend client: %w", err)
+		client, err = constraintclient.NewClient(constraintclient.Targets(&target.K8sValidationTarget{}), constraintclient.Driver(driver), constraintclient.EnforcementPoints("audit.gatekeeper.sh"))
+		if err != nil {
+			return nil, fmt.Errorf("unable to set up constraint framework data client: %w", err)
+		}
 	}
-
-	// ControllerSwitch will be used to disable controllers during our teardown process,
-	// avoiding conflicts in finalizer cleanup.
-	cs := watch.NewSwitch()
 
 	processExcluder := process.Get()
+	syncMetricsCache := syncutil.NewMetricsCache()
+	reg, err := wm.NewRegistrar(
+		cachemanager.RegistrarName,
+		events)
+	if err != nil {
+		return nil, fmt.Errorf("cannot create registrar: %w", err)
+	}
+	cacheManager, err := cachemanager.NewCacheManager(&cachemanager.Config{
+		CfClient:         client,
+		SyncMetricsCache: syncMetricsCache,
+		Tracker:          tracker,
+		ProcessExcluder:  processExcluder,
+		Registrar:        reg,
+		Reader:           reader,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("error creating cache manager: %w", err)
+	}
+	go func() {
+		_ = cacheManager.Start(ctx)
+	}()
 
-	watchSet := watch.NewSet()
-	rec, _ := newReconciler(mgr, opaClient, wm, cs, tracker, processExcluder, events, watchSet, nil)
+	pod := fakes.Pod(
+		fakes.WithNamespace("gatekeeper-system"),
+		fakes.WithName("no-pod"),
+	)
+
+	rec, err := newReconciler(mgr, cacheManager, tracker, func(context.Context) (*v1.Pod, error) { return pod, nil })
+	if err != nil {
+		return nil, fmt.Errorf("creating reconciler: %w", err)
+	}
 	err = add(mgr, rec)
 	if err != nil {
-		return fmt.Errorf("adding reconciler to manager: %w", err)
+		return nil, fmt.Errorf("adding reconciler to manager: %w", err)
 	}
-	return nil
+
+	syncAdder := syncc.Adder{
+		Events:       events,
+		CacheManager: cacheManager,
+	}
+	err = syncAdder.Add(mgr)
+	if err != nil {
+		return nil, fmt.Errorf("registering sync controller: %w", err)
+	}
+	return client, nil
 }
 
-// Verify the Opa cache is populated based on the config resource.
+// Verify the constraint framework cache is populated based on the config resource.
 func TestConfig_CacheContents(t *testing.T) {
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	defer cancelFunc()
+
+	// Setup the Manager and Controller.
+	mgr, wm := setupManager(t)
+	c := testclient.NewRetryClient(mgr.GetClient())
 	g := gomega.NewGomegaWithT(t)
 	nsGVK := schema.GroupVersionKind{
 		Group:   "",
@@ -420,157 +488,96 @@ func TestConfig_CacheContents(t *testing.T) {
 		Version: "v1",
 		Kind:    "ConfigMap",
 	}
-	instance := configFor([]schema.GroupVersionKind{
-		nsGVK,
-		configMapGVK,
-	})
-
-	// Setup the Manager and Controller.
-	mgr, wm := setupManager(t)
-	c := testclient.NewRetryClient(mgr.GetClient())
-
-	opaClient := &fakeOpa{}
-	cs := watch.NewSwitch()
-	tracker, err := readiness.SetupTracker(mgr, false, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	processExcluder := process.Get()
-	processExcluder.Add(instance.Spec.Match)
-
-	events := make(chan event.GenericEvent, 1024)
-	watchSet := watch.NewSet()
-	rec, _ := newReconciler(mgr, opaClient, wm, cs, tracker, processExcluder, events, watchSet, events)
-	err = add(mgr, rec)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancelFunc := context.WithCancel(context.Background())
-	testutils.StartManager(ctx, t, mgr)
-	once := gosync.Once{}
-	testMgrStopped := func() {
-		once.Do(func() {
-			cancelFunc()
-		})
-	}
-
-	defer testMgrStopped()
-
-	// Create the Config object and expect the Reconcile to be created
-	ctx = context.Background()
-
-	instance = configFor([]schema.GroupVersionKind{nsGVK, configMapGVK})
-
-	// Since we're reusing instance between tests, we must wait for it to be fully
-	// deleted. We also can't reuse the same instance without introducing
-	// flakiness as client.Client methods modify their input.
-	g.Eventually(ensureDeleted(ctx, c, instance), timeout).
-		ShouldNot(gomega.HaveOccurred())
-	g.Eventually(ensureCreated(ctx, c, instance), timeout).
-		ShouldNot(gomega.HaveOccurred())
-
-	t.Cleanup(func() {
-		err = c.Delete(ctx, instance)
-		if !apierrors.IsNotFound(err) {
-			t.Errorf("got Delete(instance) error %v, want IsNotFound", err)
-		}
-	})
-
 	// Create a configMap to test for
 	cm := unstructuredFor(configMapGVK, "config-test-1")
 	cm.SetNamespace("default")
-	err = c.Create(ctx, cm)
-	if err != nil {
-		t.Fatalf("creating configMap config-test-1: %v", err)
-	}
+	require.NoError(t, c.Create(ctx, cm), "creating configMap config-test-1")
+	t.Cleanup(func() {
+		assert.NoError(t, deleteResource(ctx, c, cm), "deleting configMap config-test-1")
+	})
+	cmKey, err := fakes.KeyFor(cm)
+	require.NoError(t, err)
 
 	cm2 := unstructuredFor(configMapGVK, "config-test-2")
 	cm2.SetNamespace("kube-system")
-	err = c.Create(ctx, cm2)
-	if err != nil {
-		t.Fatalf("creating configMap config-test-2: %v", err)
-	}
+	require.NoError(t, c.Create(ctx, cm2), "creating configMap config-test-2")
+	t.Cleanup(func() {
+		assert.NoError(t, deleteResource(ctx, c, cm2), "deleting configMap config-test-2")
+	})
+	cm2Key, err := fakes.KeyFor(cm2)
+	require.NoError(t, err)
 
-	defer func() {
-		err = c.Delete(ctx, cm)
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = c.Delete(ctx, cm2)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}()
+	tracker, err := readiness.SetupTracker(mgr, false, false, false)
+	require.NoError(t, err)
 
-	expected := map[opaKey]interface{}{
-		{gvk: nsGVK, key: "default"}:                      nil,
-		{gvk: configMapGVK, key: "default/config-test-1"}: nil,
-		// kube-system namespace is being excluded, it should not be in opa cache
+	events := make(chan event.GenericEvent, 1024)
+	dataClient, err := setupController(ctx, mgr, wm, tracker, events, c, true)
+	require.NoError(t, err, "failed to set up controller")
+
+	fakeClient, ok := dataClient.(*fakes.FakeCfClient)
+	require.True(t, ok)
+
+	testutils.StartManager(ctx, t, mgr)
+
+	// Create the Config object and expect the Reconcile to be created
+	config := configFor([]schema.GroupVersionKind{nsGVK, configMapGVK})
+	require.NoError(t, c.Create(ctx, config), "creating Config config")
+
+	expected := map[fakes.CfDataKey]interface{}{
+		{Gvk: nsGVK, Key: "default"}: nil,
+		cmKey:                        nil,
+		// kube-system namespace is being excluded, it should not be in the cache
 	}
 	g.Eventually(func() bool {
-		return opaClient.Contains(expected)
-	}, 10*time.Second).Should(gomega.BeTrue(), "checking initial opa cache contents")
-
-	// Sanity
-	if !opaClient.HasGVK(nsGVK) {
-		t.Fatal("want opaClient.HasGVK(nsGVK) to be true but got false")
-	}
+		return fakeClient.Contains(expected)
+	}, 10*time.Second).Should(gomega.BeTrue(), "checking initial cache contents")
+	require.True(t, fakeClient.HasGVK(nsGVK), "want fakeClient.HasGVK(nsGVK) to be true but got false")
 
 	// Reconfigure to drop the namespace watches
-	instance = configFor([]schema.GroupVersionKind{configMapGVK})
-	forUpdate := instance.DeepCopy()
-	_, err = controllerutil.CreateOrUpdate(ctx, c, forUpdate, func() error {
-		forUpdate.Spec = instance.Spec
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("updating Config resource: %v", err)
-	}
+	config = configFor([]schema.GroupVersionKind{configMapGVK})
+	configUpdate := config.DeepCopy()
+
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(configUpdate), configUpdate))
+	configUpdate.Spec = config.Spec
+	require.NoError(t, c.Update(ctx, configUpdate), "updating Config config")
 
 	// Expect namespaces to go away from cache
 	g.Eventually(func() bool {
-		return opaClient.HasGVK(nsGVK)
+		return fakeClient.HasGVK(nsGVK)
 	}, 10*time.Second).Should(gomega.BeFalse())
 
 	// Expect our configMap to return at some point
 	// TODO: In the future it will remain instead of having to repopulate.
-	expected = map[opaKey]interface{}{
-		{
-			gvk: configMapGVK,
-			key: "default/config-test-1",
-		}: nil,
+	expected = map[fakes.CfDataKey]interface{}{
+		cmKey: nil,
 	}
 	g.Eventually(func() bool {
-		return opaClient.Contains(expected)
+		return fakeClient.Contains(expected)
 	}, 10*time.Second).Should(gomega.BeTrue(), "waiting for ConfigMap to repopulate in cache")
 
-	expected = map[opaKey]interface{}{
-		{
-			gvk: configMapGVK,
-			key: "kube-system/config-test-2",
-		}: nil,
+	expected = map[fakes.CfDataKey]interface{}{
+		cm2Key: nil,
 	}
 	g.Eventually(func() bool {
-		return !opaClient.Contains(expected)
-	}, 10*time.Second).Should(gomega.BeTrue(), "kube-system namespace is excluded. kube-system/config-test-2 should not be in opa cache")
+		return !fakeClient.Contains(expected)
+	}, 10*time.Second).Should(gomega.BeTrue(), "kube-system namespace is excluded. kube-system/config-test-2 should not be in the cache")
 
-	// Delete the config resource - expect opa to empty out.
-	if opaClient.Len() == 0 {
+	// Delete the config resource - expect cache to empty out.
+	if fakeClient.Len() == 0 {
 		t.Fatal("sanity")
 	}
-	err = c.Delete(ctx, instance)
-	if err != nil {
-		t.Fatalf("deleting Config resource: %v", err)
-	}
+	require.NoError(t, c.Delete(ctx, config), "deleting Config resource")
 
 	// The cache will be cleared out.
 	g.Eventually(func() int {
-		return opaClient.Len()
+		return fakeClient.Len()
 	}, 10*time.Second).Should(gomega.BeZero(), "waiting for cache to empty")
 }
 
 func TestConfig_Retries(t *testing.T) {
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	defer cancelFunc()
+
 	g := gomega.NewGomegaWithT(t)
 	nsGVK := schema.GroupVersionKind{
 		Group:   "",
@@ -582,17 +589,14 @@ func TestConfig_Retries(t *testing.T) {
 		Version: "v1",
 		Kind:    "ConfigMap",
 	}
-	instance := configFor([]schema.GroupVersionKind{
-		configMapGVK,
-	})
+	instance := configFor([]schema.GroupVersionKind{nsGVK, configMapGVK})
 
 	// Setup the Manager and Controller.
 	mgr, wm := setupManager(t)
 	c := testclient.NewRetryClient(mgr.GetClient())
 
-	opaClient := &fakeOpa{}
-	cs := watch.NewSwitch()
-	tracker, err := readiness.SetupTracker(mgr, false, false)
+	dataClient := &fakes.FakeCfClient{}
+	tracker, err := readiness.SetupTracker(mgr, false, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,44 +604,57 @@ func TestConfig_Retries(t *testing.T) {
 	processExcluder.Add(instance.Spec.Match)
 
 	events := make(chan event.GenericEvent, 1024)
-	watchSet := watch.NewSet()
-	rec, _ := newReconciler(mgr, opaClient, wm, cs, tracker, processExcluder, events, watchSet, events)
+	syncMetricsCache := syncutil.NewMetricsCache()
+	reg, err := wm.NewRegistrar(
+		cachemanager.RegistrarName,
+		events)
+	require.NoError(t, err)
+	cacheManager, err := cachemanager.NewCacheManager(&cachemanager.Config{
+		CfClient:         dataClient,
+		SyncMetricsCache: syncMetricsCache,
+		Tracker:          tracker,
+		ProcessExcluder:  processExcluder,
+		Registrar:        reg,
+		Reader:           c,
+	})
+	require.NoError(t, err)
+	go func() {
+		assert.NoError(t, cacheManager.Start(ctx))
+	}()
+
+	pod := fakes.Pod(
+		fakes.WithNamespace("gatekeeper-system"),
+		fakes.WithName("no-pod"),
+	)
+
+	rec, _ := newReconciler(mgr, cacheManager, tracker, func(context.Context) (*v1.Pod, error) { return pod, nil })
 	err = add(mgr, rec)
 	if err != nil {
 		t.Fatal(err)
 	}
+	syncAdder := syncc.Adder{
+		Events:       events,
+		CacheManager: cacheManager,
+	}
+	require.NoError(t, syncAdder.Add(mgr), "registering sync controller")
 
-	// Use our special hookReader to inject controlled failures
-	failPlease := make(chan string, 1)
-	rec.reader = hookReader{
+	// Use our special reader interceptor to inject controlled failures
+	fi := fakes.NewFailureInjector()
+	rec.reader = fakes.SpyReader{
 		Reader: mgr.GetCache(),
 		ListFunc: func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
-			// Return an error the first go-around.
-			var failKind string
-			select {
-			case failKind = <-failPlease:
-			default:
-			}
-			if failKind != "" && list.GetObjectKind().GroupVersionKind().Kind == failKind {
+			// return as many syntenthic failures as there are registered for this kind
+			if fi.CheckFailures(list.GetObjectKind().GroupVersionKind().Kind) {
 				return fmt.Errorf("synthetic failure")
 			}
+
 			return mgr.GetCache().List(ctx, list, opts...)
 		},
 	}
 
-	ctx, cancelFunc := context.WithCancel(context.Background())
 	testutils.StartManager(ctx, t, mgr)
-	once := gosync.Once{}
-	testMgrStopped := func() {
-		once.Do(func() {
-			cancelFunc()
-		})
-	}
-
-	defer testMgrStopped()
 
 	// Create the Config object and expect the Reconcile to be created
-	ctx = context.Background()
 	g.Eventually(func() error {
 		return c.Create(ctx, instance.DeepCopy())
 	}, timeout).Should(gomega.BeNil())
@@ -664,28 +681,20 @@ func TestConfig_Retries(t *testing.T) {
 			t.Error(err)
 		}
 	}()
+	cmKey, err := fakes.KeyFor(cm)
+	require.NoError(t, err)
 
-	expected := map[opaKey]interface{}{
-		{gvk: configMapGVK, key: "default/config-test-1"}: nil,
+	expected := map[fakes.CfDataKey]interface{}{
+		cmKey: nil,
 	}
 	g.Eventually(func() bool {
-		return opaClient.Contains(expected)
-	}, 10*time.Second).Should(gomega.BeTrue(), "checking initial opa cache contents")
+		return dataClient.Contains(expected)
+	}, 10*time.Second).Should(gomega.BeTrue(), "checking initial cache contents")
 
-	// Wipe the opa cache, we want to see it repopulate despite transient replay errors below.
-	_, err = opaClient.RemoveData(ctx, target.WipeData())
-	if err != nil {
-		t.Fatalf("wiping opa cache: %v", err)
-	}
-	if opaClient.Contains(expected) {
-		t.Fatal("wipe failed")
-	}
+	fi.SetFailures("ConfigMapList", 2)
 
-	// Make List fail once for ConfigMaps as the replay occurs following the reconfig below.
-	failPlease <- "ConfigMapList"
-
-	// Reconfigure to add a namespace watch.
-	instance = configFor([]schema.GroupVersionKind{nsGVK, configMapGVK})
+	// Reconfigure to force an internal replay.
+	instance = configFor([]schema.GroupVersionKind{configMapGVK})
 	forUpdate := instance.DeepCopy()
 	_, err = controllerutil.CreateOrUpdate(ctx, c, forUpdate, func() error {
 		forUpdate.Spec = instance.Spec
@@ -697,8 +706,8 @@ func TestConfig_Retries(t *testing.T) {
 
 	// Despite the transient error, we expect the cache to eventually be repopulated.
 	g.Eventually(func() bool {
-		return opaClient.Contains(expected)
-	}, 10*time.Second).Should(gomega.BeTrue(), "checking final opa cache contents")
+		return dataClient.Contains(expected)
+	}, 10*time.Second).Should(gomega.BeTrue(), "checking final cache contents")
 }
 
 // configFor returns a config resource that watches the requested set of resources.
@@ -725,7 +734,7 @@ func configFor(kinds []schema.GroupVersionKind) *configv1alpha1.Config {
 			},
 			Match: []configv1alpha1.MatchEntry{
 				{
-					ExcludedNamespaces: []util.Wildcard{"kube-system"},
+					ExcludedNamespaces: []wildcard.Wildcard{"kube-system"},
 					Processes:          []string{"sync"},
 				},
 			},
@@ -746,65 +755,15 @@ type testExpectations interface {
 	IsExpecting(gvk schema.GroupVersionKind, nsName types.NamespacedName) bool
 }
 
-// ensureDeleted
-//
-// This package uses the same API server process across multiple test functions.
-// The residual state from a previous test function can cause flakes.
-//
-// To ensure a clean slate, we must verify that any previously applied Config object
-// has been fully removed before applying our new object.
-func ensureDeleted(ctx context.Context, c client.Client, toDelete client.Object) func() error {
-	gvk := toDelete.GetObjectKind().GroupVersionKind()
-	key := client.ObjectKeyFromObject(toDelete)
-
-	return func() error {
-		u := &unstructured.Unstructured{}
-		u.SetGroupVersionKind(gvk)
-
-		err := c.Get(ctx, key, u)
-		if apierrors.IsNotFound(err) {
-			return nil
-		} else if err != nil {
-			return err
-		}
-
-		if !u.GetDeletionTimestamp().IsZero() {
-			return fmt.Errorf("waiting for deletion: %v %v", gvk, key)
-		}
-
-		err = c.Delete(ctx, u)
-		if err != nil {
-			return fmt.Errorf("deleting %v %v: %w", gvk, key, err)
-		}
-
-		return fmt.Errorf("queued %v %v for deletion", gvk, key)
+func deleteResource(ctx context.Context, c client.Client, resounce *unstructured.Unstructured) error {
+	if ctx.Err() != nil {
+		ctx = context.Background()
 	}
-}
-
-// ensureCreated attempts to create toCreate in Client c as toCreate existed when ensureCreated was called.
-func ensureCreated(ctx context.Context, c client.Client, toCreate client.Object) func() error {
-	gvk := toCreate.GetObjectKind().GroupVersionKind()
-	key := client.ObjectKeyFromObject(toCreate)
-
-	// As ensureCreated returns a closure, it is possible that the value toCreate will be modified after ensureCreated
-	// is called but before the closure is called. Creating a copy here ensures the object to be created is consistent
-	// with the way it existed when ensureCreated was called.
-	toCreateCopy := toCreate.DeepCopyObject()
-
-	return func() error {
-		instance, ok := toCreateCopy.(client.Object)
-		if !ok {
-			return fmt.Errorf("instance was %T which is not a client.Object", instance)
-		}
-
-		err := c.Create(ctx, instance)
-		if apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("a copy of %v %v already exists - run ensureDeleted to ensure a fresh copy exists for testing",
-				gvk, key)
-		} else if err != nil {
-			return fmt.Errorf("creating %v %v: %w", gvk, key, err)
-		}
-
+	err := c.Delete(ctx, resounce)
+	if apierrors.IsNotFound(err) {
+		// resource does not exist, this is good
 		return nil
 	}
+
+	return err
 }

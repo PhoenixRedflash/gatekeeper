@@ -5,11 +5,11 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	mutationsunversioned "github.com/open-policy-agent/gatekeeper/apis/mutations/unversioned"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/match"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/path/tester"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
-	"github.com/open-policy-agent/gatekeeper/pkg/util"
+	mutationsunversioned "github.com/open-policy-agent/gatekeeper/v3/apis/mutations/unversioned"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/match"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/path/tester"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/wildcard"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -139,7 +139,7 @@ func TestAssignHasDiff(t *testing.T) {
 	}{
 		{
 			"same",
-			func(a *mutationsunversioned.Assign) {},
+			func(_ *mutationsunversioned.Assign) {},
 			false,
 		},
 		{
@@ -221,7 +221,7 @@ func TestAssignMetadataHasDiff(t *testing.T) {
 	}{
 		{
 			"same",
-			func(a *mutationsunversioned.AssignMetadata) {},
+			func(_ *mutationsunversioned.AssignMetadata) {},
 			false,
 		},
 		{
@@ -241,7 +241,7 @@ func TestAssignMetadataHasDiff(t *testing.T) {
 		{
 			"differentMatch",
 			func(a *mutationsunversioned.AssignMetadata) {
-				a.Spec.Match.Namespaces = []util.Wildcard{"foo", "bar"}
+				a.Spec.Match.Namespaces = []wildcard.Wildcard{"foo", "bar"}
 			},
 			true,
 		},

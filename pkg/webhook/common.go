@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/open-policy-agent/gatekeeper/apis"
-	"github.com/open-policy-agent/gatekeeper/apis/config/v1alpha1"
-	"github.com/open-policy-agent/gatekeeper/pkg/controller/config/process"
-	"github.com/open-policy-agent/gatekeeper/pkg/keys"
-	"github.com/open-policy-agent/gatekeeper/pkg/util"
+	"github.com/open-policy-agent/gatekeeper/v3/apis"
+	"github.com/open-policy-agent/gatekeeper/v3/apis/config/v1alpha1"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller/config/process"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/keys"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -21,7 +21,6 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -38,13 +37,6 @@ const (
 
 var log = logf.Log.WithName("webhook")
 
-var (
-	// VwhName is the metadata.name of the Gatekeeper ValidatingWebhookConfiguration.
-	VwhName = "gatekeeper-validating-webhook-configuration"
-	// MwhName is the metadata.name of the Gatekeeper MutatingWebhookConfiguration.
-	MwhName = "gatekeeper-mutating-webhook-configuration"
-)
-
 const (
 	serviceAccountName = "gatekeeper-admin"
 	mutationsGroup     = "mutations.gatekeeper.sh"
@@ -56,15 +48,35 @@ var (
 	runtimeScheme                      = k8sruntime.NewScheme()
 	codecs                             = serializer.NewCodecFactory(runtimeScheme)
 	deserializer                       = codecs.UniversalDeserializer()
-	disableEnforcementActionValidation = flag.Bool("disable-enforcementaction-validation", false, "disable validation of the enforcementAction field of a constraint")
+	disableEnforcementActionValidation = flag.Bool("disable-enforcementaction-validation", false, "disable validation of the enforcementAction and scopedEnforcementActions field of a constraint")
 	logDenies                          = flag.Bool("log-denies", false, "log detailed info on each deny")
-	emitAdmissionEvents                = flag.Bool("emit-admission-events", false, "(alpha) emit Kubernetes events in gatekeeper namespace for each admission violation")
-	tlsMinVersion                      = flag.String("tls-min-version", "1.3", "minimum version of TLS supported")
+	emitAdmissionEvents                = flag.Bool("emit-admission-events", false, "(alpha) emit Kubernetes events for each admission violation")
+	admissionEventsInvolvedNamespace   = flag.Bool("admission-events-involved-namespace", false, "emit admission events for each violation in the involved objects namespace, the default (false) generates events in the namespace Gatekeeper is installed in. Admission events from cluster-scoped resources will still follow the default behavior")
+	logStatsAdmission                  = flag.Bool("log-stats-admission", false, "(alpha) log stats for admission webhook")
 	serviceaccount                     = fmt.Sprintf("system:serviceaccount:%s:%s", util.GetNamespace(), serviceAccountName)
-	clientCAName                       = flag.String("client-ca-name", "", "name of the certificate authority bundle to authenticate the Kubernetes API server requests against")
-	certCNName                         = flag.String("client-cn-name", "kube-apiserver", "expected CN name on the client certificate attached by apiserver in requests to the webhook")
-	// webhookName is deprecated, set this on the manifest YAML if needed".
+	VwhName                            = flag.String("validating-webhook-configuration-name", "gatekeeper-validating-webhook-configuration", "name of the ValidatingWebhookConfiguration")
+	MwhName                            = flag.String("mutating-webhook-configuration-name", "gatekeeper-mutating-webhook-configuration", "name of the MutatingWebhookConfiguration")
+	TLSMinVersion                      = flag.String("tls-min-version", "1.3", "minimum version of TLS supported")
+	ClientCAName                       = flag.String("client-ca-name", "", "name of the certificate authority bundle to authenticate the Kubernetes API server requests against")
+	CertCNName                         = flag.String("client-cn-name", "kube-apiserver", "expected CN name on the client certificate attached by apiserver in requests to the webhook")
 )
+
+func ParseTLSVersion(v string) (uint16, error) {
+	switch v {
+	case "":
+		return tls.VersionTLS10, nil
+	case "1.0":
+		return tls.VersionTLS10, nil
+	case "1.1":
+		return tls.VersionTLS11, nil
+	case "1.2":
+		return tls.VersionTLS12, nil
+	case "1.3":
+		return tls.VersionTLS13, nil
+	default:
+		return 0, errors.New("invalid TLS version. Must be one of: 1.0, 1.1, 1.2, or 1.3")
+	}
+}
 
 func init() {
 	_ = apis.AddToScheme(runtimeScheme)
@@ -104,6 +116,8 @@ func (h *webhookHandler) isGatekeeperResource(req *admission.Request) bool {
 		req.AdmissionRequest.Kind.Group == "constraints.gatekeeper.sh" ||
 		req.AdmissionRequest.Kind.Group == mutationsGroup ||
 		req.AdmissionRequest.Kind.Group == "config.gatekeeper.sh" ||
+		req.AdmissionRequest.Kind.Group == externalDataGroup ||
+		req.AdmissionRequest.Kind.Group == "expansion.gatekeeper.sh" ||
 		req.AdmissionRequest.Kind.Group == "status.gatekeeper.sh" {
 		return true
 	}
@@ -149,24 +163,11 @@ func (h *webhookHandler) skipExcludedNamespace(req *admissionv1.AdmissionRequest
 	return isNamespaceExcluded, err
 }
 
-func congifureWebhookServer(server *webhook.Server) *webhook.Server {
-	server.TLSMinVersion = *tlsMinVersion
-	if *clientCAName != "" {
-		server.ClientCAName = *clientCAName
-		server.TLSOpts = []func(*tls.Config){
-			func(cfg *tls.Config) {
-				cfg.VerifyConnection = getCertNameVerifier()
-			},
-		}
-	}
-	return server
-}
-
-func getCertNameVerifier() func(cs tls.ConnectionState) error {
+func GetCertNameVerifier() func(cs tls.ConnectionState) error {
 	return func(cs tls.ConnectionState) error {
 		if len(cs.PeerCertificates) > 0 {
-			if cs.PeerCertificates[0].Subject.CommonName != *certCNName {
-				return fmt.Errorf("x509: subject with cn=%s do not identify as %s", cs.PeerCertificates[0].Subject.CommonName, *certCNName)
+			if cs.PeerCertificates[0].Subject.CommonName != *CertCNName {
+				return fmt.Errorf("x509: subject with cn=%s do not identify as %s", cs.PeerCertificates[0].Subject.CommonName, *CertCNName)
 			}
 			return nil
 		}

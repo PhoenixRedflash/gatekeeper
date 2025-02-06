@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 func TestPrinterGo_Print(t *testing.T) {
@@ -282,7 +282,7 @@ PASS
 						CaseResults: []CaseResult{{
 							Name:    "case name",
 							Runtime: Duration(100 * time.Millisecond),
-							Trace:   pointer.String("this is a trace"),
+							Trace:   ptr.To[string]("this is a trace"),
 						}},
 					},
 				},
@@ -305,9 +305,6 @@ PASS
 	printer := PrinterGo{}
 
 	for _, tc := range testCases {
-		// Required for parallel tests.
-		tc := tc
-
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

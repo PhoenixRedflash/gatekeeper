@@ -16,8 +16,10 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"github.com/open-policy-agent/gatekeeper/pkg/util"
+	status "github.com/open-policy-agent/gatekeeper/v3/apis/status/v1beta1"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/wildcard"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // ConfigSpec defines the desired state of Config.
@@ -62,9 +64,17 @@ type SyncOnlyEntry struct {
 	Kind    string `json:"kind,omitempty"`
 }
 
+func (e *SyncOnlyEntry) ToGroupVersionKind() schema.GroupVersionKind {
+	return schema.GroupVersionKind{
+		Group:   e.Group,
+		Version: e.Version,
+		Kind:    e.Kind,
+	}
+}
+
 type MatchEntry struct {
-	Processes          []string        `json:"processes,omitempty"`
-	ExcludedNamespaces []util.Wildcard `json:"excludedNamespaces,omitempty"`
+	Processes          []string            `json:"processes,omitempty"`
+	ExcludedNamespaces []wildcard.Wildcard `json:"excludedNamespaces,omitempty"`
 }
 
 type ReadinessSpec struct {
@@ -73,6 +83,7 @@ type ReadinessSpec struct {
 
 // ConfigStatus defines the observed state of Config.
 type ConfigStatus struct { // Important: Run "make" to regenerate code after modifying this file
+	ByPod []status.ConfigPodStatusStatus `json:"byPod,omitempty"`
 }
 
 type GVK struct {
@@ -83,6 +94,8 @@ type GVK struct {
 
 // +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:storageversion
 
 // Config is the Schema for the configs API.
 type Config struct {

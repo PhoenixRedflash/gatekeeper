@@ -17,8 +17,8 @@ package v1beta1
 
 import (
 	templatesv1beta1 "github.com/open-policy-agent/frameworks/constraint/pkg/apis/templates/v1beta1"
-	"github.com/open-policy-agent/gatekeeper/pkg/operations"
-	"github.com/open-policy-agent/gatekeeper/pkg/util"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/operations"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -29,11 +29,19 @@ import (
 // ConstraintTemplatePodStatusStatus defines the observed state of ConstraintTemplatePodStatus.
 type ConstraintTemplatePodStatusStatus struct {
 	// Important: Run "make" to regenerate code after modifying this file
-	ID                 string                             `json:"id,omitempty"`
-	TemplateUID        types.UID                          `json:"templateUID,omitempty"`
-	Operations         []string                           `json:"operations,omitempty"`
-	ObservedGeneration int64                              `json:"observedGeneration,omitempty"`
-	Errors             []*templatesv1beta1.CreateCRDError `json:"errors,omitempty"`
+	ID                  string                             `json:"id,omitempty"`
+	TemplateUID         types.UID                          `json:"templateUID,omitempty"`
+	Operations          []string                           `json:"operations,omitempty"`
+	ObservedGeneration  int64                              `json:"observedGeneration,omitempty"`
+	Errors              []*templatesv1beta1.CreateCRDError `json:"errors,omitempty"`
+	VAPGenerationStatus *VAPGenerationStatus               `json:"vapGenerationStatus,omitempty"`
+}
+
+// VAPGenerationStatus represents the status of VAP generation.
+type VAPGenerationStatus struct {
+	State              string `json:"state,omitempty"`
+	ObservedGeneration int64  `json:"observedGeneration,omitempty"`
+	Warning            string `json:"warning,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -88,5 +96,5 @@ func NewConstraintTemplateStatusForPod(pod *corev1.Pod, templateName string, sch
 // KeyForConstraintTemplate returns a unique status object name given the Pod ID and
 // a template object.
 func KeyForConstraintTemplate(id string, templateName string) (string, error) {
-	return dashPacker(id, templateName)
+	return DashPacker(id, templateName)
 }

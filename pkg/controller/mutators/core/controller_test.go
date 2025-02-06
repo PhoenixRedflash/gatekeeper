@@ -23,34 +23,32 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/onsi/gomega"
-	mutationsinternal "github.com/open-policy-agent/gatekeeper/apis/mutations/unversioned"
-	mutationsv1 "github.com/open-policy-agent/gatekeeper/apis/mutations/v1"
-	podstatus "github.com/open-policy-agent/gatekeeper/apis/status/v1beta1"
-	"github.com/open-policy-agent/gatekeeper/pkg/controller/mutatorstatus"
-	"github.com/open-policy-agent/gatekeeper/pkg/fakes"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/match"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/mutators"
-	mutationschema "github.com/open-policy-agent/gatekeeper/pkg/mutation/schema"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
-	"github.com/open-policy-agent/gatekeeper/pkg/readiness"
-	"github.com/open-policy-agent/gatekeeper/test/testutils"
+	mutationsinternal "github.com/open-policy-agent/gatekeeper/v3/apis/mutations/unversioned"
+	mutationsv1 "github.com/open-policy-agent/gatekeeper/v3/apis/mutations/v1"
+	podstatus "github.com/open-policy-agent/gatekeeper/v3/apis/status/v1beta1"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller/mutatorstatus"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/fakes"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/match"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/mutators"
+	mutationschema "github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/schema"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/readiness"
+	"github.com/open-policy-agent/gatekeeper/v3/test/testutils"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/net/context"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	apiTypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
-	"sigs.k8s.io/controller-runtime/pkg/source"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
 const timeout = time.Second * 15
@@ -65,11 +63,11 @@ func setupManager(t *testing.T) manager.Manager {
 
 	metrics.Registry = prometheus.NewRegistry()
 	mgr, err := manager.New(cfg, manager.Options{
-		MetricsBindAddress: "0",
-		MapperProvider: func(c *rest.Config) (meta.RESTMapper, error) {
-			return apiutil.NewDynamicRESTMapper(c)
+		Metrics: metricsserver.Options{
+			BindAddress: "0",
 		},
-		Logger: testutils.NewLogger(t),
+		MapperProvider: apiutil.NewDynamicRESTMapper,
+		Logger:         testutils.NewLogger(t),
 	})
 	if err != nil {
 		t.Fatalf("setting up controller manager: %s", err)
@@ -117,13 +115,13 @@ func TestReconcile(t *testing.T) {
 
 	// creating the gatekeeper-system namespace is necessary because that's where
 	// status resources live by default
-	if err := createGatekeeperNamespace(mgr.GetConfig()); err != nil {
+	if err := testutils.CreateGatekeeperNamespace(mgr.GetConfig()); err != nil {
 		t.Fatalf("want createGatekeeperNamespace(mgr.GetConfig()) error = nil, got %v", err)
 	}
 
 	mSys := mutation.NewSystem(mutation.SystemOpts{})
 
-	tracker, err := readiness.SetupTracker(mgr, true, false)
+	tracker, err := readiness.SetupTracker(mgr, true, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,8 +144,8 @@ func TestReconcile(t *testing.T) {
 	}
 	events := make(chan event.GenericEvent, 1024)
 
-	rec := newReconciler(mgr, mSys, tracker, func(ctx context.Context) (*corev1.Pod, error) { return pod, nil }, kind, newObj, newMutator, events)
-	adder := Adder{EventsSource: &source.Channel{Source: events}}
+	rec := newReconciler(mgr, mSys, tracker, func(_ context.Context) (*corev1.Pod, error) { return pod, nil }, kind, newObj, newMutator, events)
+	adder := Adder{Events: events}
 
 	err = adder.add(mgr, rec)
 	if err != nil {
@@ -170,7 +168,7 @@ func TestReconcile(t *testing.T) {
 		}
 	})
 
-	t.Run("Mutator is reported as enforced", func(t *testing.T) {
+	t.Run("Mutator is reported as enforced", func(_ *testing.T) {
 		g.Eventually(func() error {
 			v := &mutationsv1.Assign{}
 			v.SetName("assign-test-obj")

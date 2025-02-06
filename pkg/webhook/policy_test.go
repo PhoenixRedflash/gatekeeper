@@ -5,20 +5,24 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/ghodss/yaml"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/apis/constraints"
+	externadatav1alpha1 "github.com/open-policy-agent/frameworks/constraint/pkg/apis/externaldata/v1alpha1"
 	templatesv1beta1 "github.com/open-policy-agent/frameworks/constraint/pkg/apis/templates/v1beta1"
 	constraintclient "github.com/open-policy-agent/frameworks/constraint/pkg/client"
-	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/local"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/client/drivers/rego"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/core/templates"
 	rtypes "github.com/open-policy-agent/frameworks/constraint/pkg/types"
-	"github.com/open-policy-agent/gatekeeper/apis/config/v1alpha1"
-	"github.com/open-policy-agent/gatekeeper/pkg/controller/config/process"
-	"github.com/open-policy-agent/gatekeeper/pkg/expansion"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation"
-	"github.com/open-policy-agent/gatekeeper/pkg/target"
-	"github.com/open-policy-agent/gatekeeper/pkg/util"
-	testclients "github.com/open-policy-agent/gatekeeper/test/clients"
+	"github.com/open-policy-agent/gatekeeper/v3/apis/config/v1alpha1"
+	configv1alpha1 "github.com/open-policy-agent/gatekeeper/v3/apis/config/v1alpha1"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/controller/config/process"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/expansion"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/fakes"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/target"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/util"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/wildcard"
+	testclients "github.com/open-policy-agent/gatekeeper/v3/test/clients"
+	"github.com/stretchr/testify/require"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -29,7 +33,7 @@ import (
 	k8schema "k8s.io/apimachinery/pkg/runtime/schema"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
-	atypes "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -124,28 +128,27 @@ spec:
       - apiGroups: [""]
         kinds: ["Pod"]
 `
+	nameLargerThan63 = "abignameabignameabignameabignameabignameabignameabignameabigname"
 
-	validProvider = `
-apiVersion: externaldata.gatekeeper.sh/v1alpha1
-kind: Provider
-metadata:
-  name: dummy-provider
-spec:
-  url: https://localhost:8080/validate
-  timeout: 1
-  caBundle: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUIwekNDQVgyZ0F3SUJBZ0lKQUkvTTdCWWp3Qit1TUEwR0NTcUdTSWIzRFFFQkJRVUFNRVV4Q3pBSkJnTlYKQkFZVEFrRlZNUk13RVFZRFZRUUlEQXBUYjIxbExWTjBZWFJsTVNFd0h3WURWUVFLREJoSmJuUmxjbTVsZENCWAphV1JuYVhSeklGQjBlU0JNZEdRd0hoY05NVEl3T1RFeU1qRTFNakF5V2hjTk1UVXdPVEV5TWpFMU1qQXlXakJGCk1Rc3dDUVlEVlFRR0V3SkJWVEVUTUJFR0ExVUVDQXdLVTI5dFpTMVRkR0YwWlRFaE1COEdBMVVFQ2d3WVNXNTAKWlhKdVpYUWdWMmxrWjJsMGN5QlFkSGtnVEhSa01Gd3dEUVlKS29aSWh2Y05BUUVCQlFBRFN3QXdTQUpCQU5MSgpoUEhoSVRxUWJQa2xHM2liQ1Z4d0dNUmZwL3Y0WHFoZmRRSGRjVmZIYXA2TlE1V29rLzR4SUErdWkzNS9NbU5hCnJ0TnVDK0JkWjF0TXVWQ1BGWmNDQXdFQUFhTlFNRTR3SFFZRFZSME9CQllFRkp2S3M4UmZKYVhUSDA4VytTR3YKelF5S24wSDhNQjhHQTFVZEl3UVlNQmFBRkp2S3M4UmZKYVhUSDA4VytTR3Z6UXlLbjBIOE1Bd0dBMVVkRXdRRgpNQU1CQWY4d0RRWUpLb1pJaHZjTkFRRUZCUUFEUVFCSmxmZkpIeWJqREd4Uk1xYVJtRGhYMCs2djAyVFVLWnNXCnI1UXVWYnBRaEg2dSswVWdjVzBqcDlRd3B4b1BUTFRXR1hFV0JCQnVyeEZ3aUNCaGtRK1YKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
-`
-
-	providerWithNoCA = `
-apiVersion: externaldata.gatekeeper.sh/v1alpha1
-kind: Provider
-metadata:
-  name: dummy-provider
-spec:
-  url: https://localhost:8080/validate
-  timeout: 1
-`
+	withMaxThreads = " with max threads"
 )
+
+func validProvider() *externadatav1alpha1.Provider {
+	return &externadatav1alpha1.Provider{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: externadatav1alpha1.SchemeGroupVersion.String(),
+			Kind:       "Provider",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-provider",
+		},
+		Spec: externadatav1alpha1.ProviderSpec{
+			URL:      "https://localhost:8080/validate",
+			Timeout:  1,
+			CABundle: "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUIwekNDQVgyZ0F3SUJBZ0lKQUkvTTdCWWp3Qit1TUEwR0NTcUdTSWIzRFFFQkJRVUFNRVV4Q3pBSkJnTlYKQkFZVEFrRlZNUk13RVFZRFZRUUlEQXBUYjIxbExWTjBZWFJsTVNFd0h3WURWUVFLREJoSmJuUmxjbTVsZENCWAphV1JuYVhSeklGQjBlU0JNZEdRd0hoY05NVEl3T1RFeU1qRTFNakF5V2hjTk1UVXdPVEV5TWpFMU1qQXlXakJGCk1Rc3dDUVlEVlFRR0V3SkJWVEVUTUJFR0ExVUVDQXdLVTI5dFpTMVRkR0YwWlRFaE1COEdBMVVFQ2d3WVNXNTAKWlhKdVpYUWdWMmxrWjJsMGN5QlFkSGtnVEhSa01Gd3dEUVlKS29aSWh2Y05BUUVCQlFBRFN3QXdTQUpCQU5MSgpoUEhoSVRxUWJQa2xHM2liQ1Z4d0dNUmZwL3Y0WHFoZmRRSGRjVmZIYXA2TlE1V29rLzR4SUErdWkzNS9NbU5hCnJ0TnVDK0JkWjF0TXVWQ1BGWmNDQXdFQUFhTlFNRTR3SFFZRFZSME9CQllFRkp2S3M4UmZKYVhUSDA4VytTR3YKelF5S24wSDhNQjhHQTFVZEl3UVlNQmFBRkp2S3M4UmZKYVhUSDA4VytTR3Z6UXlLbjBIOE1Bd0dBMVVkRXdRRgpNQU1CQWY4d0RRWUpLb1pJaHZjTkFRRUZCUUFEUVFCSmxmZkpIeWJqREd4Uk1xYVJtRGhYMCs2djAyVFVLWnNXCnI1UXVWYnBRaEg2dSswVWdjVzBqcDlRd3B4b1BUTFRXR1hFV0JCQnVyeEZ3aUNCaGtRK1YKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=",
+		},
+	}
+}
 
 func validRegoTemplate() *templates.ConstraintTemplate {
 	return &templates.ConstraintTemplate{
@@ -166,12 +169,17 @@ func validRegoTemplate() *templates.ConstraintTemplate {
 			},
 			Targets: []templates.Target{{
 				Target: target.Name,
-				Rego: `
+				Code: []templates.Code{{
+					Engine: "Rego",
+					Source: &templates.Anything{
+						Value: map[string]interface{}{"rego": `
 package goodrego
 
-        violation[{"msg": msg}] {
-          msg := "Maybe this will work?"
-        }`,
+violation[{"msg": msg}] {
+   msg := "Maybe this will work?"
+}`},
+					},
+				}},
 			}},
 		},
 	}
@@ -190,92 +198,33 @@ func validRegoTemplateConstraint() *unstructured.Unstructured {
 	return u
 }
 
-func invalidRegoTemplate() *templates.ConstraintTemplate {
-	template := validRegoTemplate()
-
-	template.Spec.Targets[0].Rego = `package badrego
-
-        violation[{"msg": msg}] {
-        msg := "I'm sure this will work"`
-
-	return template
-}
-
 func makeOpaClient() (*constraintclient.Client, error) {
 	t := &target.K8sValidationTarget{}
-	driver, err := local.New(local.Tracing(false))
+	driver, err := rego.New(rego.Tracing(false))
 	if err != nil {
 		return nil, err
 	}
 
-	c, err := constraintclient.NewClient(constraintclient.Targets(t), constraintclient.Driver(driver))
+	c, err := constraintclient.NewClient(constraintclient.Targets(t), constraintclient.Driver(driver), constraintclient.EnforcementPoints(util.WebhookEnforcementPoint))
 	if err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
-func TestTemplateValidation(t *testing.T) {
-	tc := []struct {
-		Name          string
-		Template      *templates.ConstraintTemplate
-		ErrorExpected bool
-	}{
-		{
-			Name:          "Valid Template",
-			Template:      validRegoTemplate(),
-			ErrorExpected: false,
-		},
-		{
-			Name:          "Invalid Template",
-			Template:      invalidRegoTemplate(),
-			ErrorExpected: true,
-		},
-	}
-	for _, tt := range tc {
-		t.Run(tt.Name, func(t *testing.T) {
-			opa, err := makeOpaClient()
-			if err != nil {
-				t.Fatalf("Could not initialize OPA: %s", err)
-			}
-			handler := validationHandler{opa: opa, webhookHandler: webhookHandler{}}
-
-			b, err := json.Marshal(tt.Template)
-			if err != nil {
-				t.Fatalf("Error parsing yaml: %s", err)
-			}
-
-			review := &atypes.Request{
-				AdmissionRequest: admissionv1.AdmissionRequest{
-					Kind: metav1.GroupVersionKind{
-						Group:   "templates.gatekeeper.sh",
-						Version: "v1beta1",
-						Kind:    "ConstraintTemplate",
-					},
-					Object: runtime.RawExtension{
-						Raw: b,
-					},
-				},
-			}
-
-			ctx := context.Background()
-			_, err = handler.validateGatekeeperResources(ctx, review)
-			if err != nil && !tt.ErrorExpected {
-				t.Errorf("err = %s; want nil", err)
-			}
-
-			if err == nil && tt.ErrorExpected {
-				t.Error("err = nil; want non-nil")
-			}
-		})
-	}
-}
-
 type nsGetter struct {
 	testclients.NoopClient
 }
 
-func (f *nsGetter) SubResource(subResource string) ctrlclient.SubResourceClient {
+func (f *nsGetter) IsObjectNamespaced(_ runtime.Object) (bool, error) {
+	return false, nil
+}
+
+func (f *nsGetter) GroupVersionKindFor(_ runtime.Object) (k8schema.GroupVersionKind, error) {
+	return k8schema.GroupVersionKind{}, nil
+}
+
+func (f *nsGetter) SubResource(_ string) ctrlclient.SubResourceClient {
 	return nil
 }
 
@@ -294,7 +243,15 @@ type errorNSGetter struct {
 	testclients.NoopClient
 }
 
-func (f *errorNSGetter) SubResource(subResource string) ctrlclient.SubResourceClient {
+func (f *errorNSGetter) IsObjectNamespaced(_ runtime.Object) (bool, error) {
+	return false, nil
+}
+
+func (f *errorNSGetter) GroupVersionKindFor(_ runtime.Object) (k8schema.GroupVersionKind, error) {
+	return k8schema.GroupVersionKind{}, nil
+}
+
+func (f *errorNSGetter) SubResource(_ string) ctrlclient.SubResourceClient {
 	return nil
 }
 
@@ -355,11 +312,12 @@ func TestReviewRequest(t *testing.T) {
 					client:         tt.CachedClient,
 					reader:         tt.APIReader,
 				},
+				log: log,
 			}
 			if maxThreads > 0 {
 				handler.semaphore = make(chan struct{}, maxThreads)
 			}
-			review := &atypes.Request{
+			review := &admission.Request{
 				AdmissionRequest: admissionv1.AdmissionRequest{
 					Kind: metav1.GroupVersionKind{
 						Group:   "",
@@ -384,7 +342,7 @@ func TestReviewRequest(t *testing.T) {
 		t.Run(tt.Name, testFn)
 
 		maxThreads = 1
-		t.Run(tt.Name+" with max threads", testFn)
+		t.Run(tt.Name+withMaxThreads, testFn)
 	}
 }
 
@@ -393,7 +351,7 @@ func TestReviewDefaultNS(t *testing.T) {
 		Spec: v1alpha1.ConfigSpec{
 			Match: []v1alpha1.MatchEntry{
 				{
-					ExcludedNamespaces: []util.Wildcard{"default"},
+					ExcludedNamespaces: []wildcard.Wildcard{"default"},
 					Processes:          []string{"*"},
 				},
 			},
@@ -427,6 +385,7 @@ func TestReviewDefaultNS(t *testing.T) {
 				reader:          &nsGetter{},
 				processExcluder: pe,
 			},
+			log: log,
 		}
 		if maxThreads > 0 {
 			handler.semaphore = make(chan struct{}, maxThreads)
@@ -518,12 +477,13 @@ func TestConstraintValidation(t *testing.T) {
 				opa:             opa,
 				expansionSystem: expansion.NewSystem(mutation.NewSystem(mutation.SystemOpts{})),
 				webhookHandler:  webhookHandler{},
+				log:             log,
 			}
 			b, err := yaml.YAMLToJSON([]byte(tt.Constraint))
 			if err != nil {
 				t.Fatalf("Error parsing yaml: %s", err)
 			}
-			review := &atypes.Request{
+			review := &admission.Request{
 				AdmissionRequest: admissionv1.AdmissionRequest{
 					Kind: metav1.GroupVersionKind{
 						Group:   "constraints.gatekeeper.sh",
@@ -544,6 +504,48 @@ func TestConstraintValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func Test_ConstrainTemplate_Name(t *testing.T) {
+	h := &validationHandler{log: log}
+	te := validRegoTemplate()
+	te.Name = "abignameabignameabignameabignameabignameabignameabignameabigname"
+
+	b, err := convertToRawExtension(te)
+	require.NoError(t, err)
+
+	review := &admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			Kind:   metav1.GroupVersionKind(templatesv1beta1.SchemeGroupVersion.WithKind("ConstraintTemplate")),
+			Object: *b,
+			Name:   te.Name,
+		},
+	}
+
+	got, err := h.validateGatekeeperResources(context.Background(), review)
+	require.False(t, got)
+	require.ErrorContains(t, err, "resource cannot have metadata.name larger than 63 char")
+}
+
+func Test_NonGkResource_Name(t *testing.T) {
+	h := &validationHandler{log: log}
+	fp := fakes.Pod(fakes.WithName(nameLargerThan63))
+
+	b, err := convertToRawExtension(fp)
+	require.NoError(t, err)
+
+	review := &admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			Kind:   metav1.GroupVersionKind(fp.GroupVersionKind()),
+			Object: *b,
+			Name:   fp.Name,
+		},
+	}
+
+	// since this is not a gatekeeper resource, we should not enforce the metadata.name len check
+	got, err := h.validateGatekeeperResources(context.Background(), review)
+	require.False(t, got)
+	require.NoError(t, err)
 }
 
 func TestTracing(t *testing.T) {
@@ -645,12 +647,13 @@ func TestTracing(t *testing.T) {
 				opa:             opa,
 				expansionSystem: expansion.NewSystem(mutation.NewSystem(mutation.SystemOpts{})),
 				webhookHandler:  webhookHandler{injectedConfig: tt.Cfg},
+				log:             log,
 			}
 			if maxThreads > 0 {
 				handler.semaphore = make(chan struct{}, maxThreads)
 			}
 
-			review := &atypes.Request{
+			review := &admission.Request{
 				AdmissionRequest: admissionv1.AdmissionRequest{
 					Kind: metav1.GroupVersionKind{
 						Group:   "",
@@ -684,7 +687,7 @@ func TestTracing(t *testing.T) {
 		}
 		t.Run(tt.Name, testFn)
 		maxThreads = 1
-		t.Run(tt.Name+" with max threads", testFn)
+		t.Run(tt.Name+withMaxThreads, testFn)
 	}
 }
 
@@ -821,11 +824,12 @@ func TestGetValidationMessages(t *testing.T) {
 				opa:             opa,
 				expansionSystem: expansion.NewSystem(mutation.NewSystem(mutation.SystemOpts{})),
 				webhookHandler:  webhookHandler{},
+				log:             log,
 			}
 			if maxThreads > 0 {
 				handler.semaphore = make(chan struct{}, maxThreads)
 			}
-			review := &atypes.Request{
+			review := &admission.Request{
 				AdmissionRequest: admissionv1.AdmissionRequest{
 					Kind: metav1.GroupVersionKind{
 						Group:   "",
@@ -848,42 +852,57 @@ func TestGetValidationMessages(t *testing.T) {
 		t.Run(tt.Name, testFn)
 
 		maxThreads = 1
-		t.Run(tt.Name+" with max threads", testFn)
+		t.Run(tt.Name+withMaxThreads, testFn)
 	}
 }
 
 func TestValidateConfigResource(t *testing.T) {
 	tc := []struct {
-		TestName string
-		Name     string
-		Err      bool
+		name      string
+		rName     string
+		deleteOp  bool
+		expectErr bool
 	}{
 		{
-			TestName: "Wrong name",
-			Name:     "FooBar",
-			Err:      true,
+			name:      "Wrong name",
+			rName:     "FooBar",
+			expectErr: true,
 		},
 		{
-			TestName: "Correct name",
-			Name:     "config",
+			name:  "Correct name",
+			rName: "config",
+		},
+		{
+			name:     "Delete operation with no name",
+			deleteOp: true,
+		},
+		{
+			name:      "Delete operation with name",
+			deleteOp:  true,
+			rName:     "abc",
+			expectErr: true,
 		},
 	}
 
 	for _, tt := range tc {
-		t.Run(tt.TestName, func(t *testing.T) {
-			handler := validationHandler{}
-			req := &atypes.Request{
+		t.Run(tt.name, func(t *testing.T) {
+			handler := validationHandler{log: log}
+			req := &admission.Request{
 				AdmissionRequest: admissionv1.AdmissionRequest{
-					Name: tt.Name,
+					Name: tt.rName,
+					Kind: metav1.GroupVersionKind(configv1alpha1.GroupVersion.WithKind("Config")),
 				},
 			}
+			if tt.deleteOp {
+				req.AdmissionRequest.Operation = admissionv1.Delete
+			}
 
-			err := handler.validateConfigResource(req)
+			_, err := handler.validateGatekeeperResources(context.Background(), req)
 
-			if tt.Err && err == nil {
+			if tt.expectErr && err == nil {
 				t.Errorf("Expected error but received nil")
 			}
-			if !tt.Err && err != nil {
+			if !tt.expectErr && err != nil {
 				t.Errorf("Did not expect error but received: %v", err)
 			}
 		})
@@ -893,52 +912,76 @@ func TestValidateConfigResource(t *testing.T) {
 func TestValidateProvider(t *testing.T) {
 	tests := []struct {
 		name     string
-		provider string
+		provider *externadatav1alpha1.Provider
 		want     bool
 		wantErr  bool
 	}{
 		{
 			name:     "valid provider",
-			provider: validProvider,
+			provider: validProvider(),
 			want:     false,
 			wantErr:  false,
 		},
 		{
-			name:     "invalid provider",
-			provider: "invalid",
-			want:     false,
-			wantErr:  true,
+			name: "invalid provider",
+			provider: func() *externadatav1alpha1.Provider {
+				return &externadatav1alpha1.Provider{}
+			}(),
+			want:    false,
+			wantErr: true,
 		},
 		{
-			name:     "provider with no CA",
-			provider: providerWithNoCA,
-			want:     true,
-			wantErr:  true,
+			name: "provider with no CA",
+			provider: func() *externadatav1alpha1.Provider {
+				p := validProvider()
+				p.Spec.CABundle = ""
+				return p
+			}(),
+			want:    true,
+			wantErr: true,
+		},
+		{
+			name: "provider with big name",
+			provider: func() *externadatav1alpha1.Provider {
+				p := validProvider()
+				p.Name = "abignameabignameabignameabignameabignameabignameabignameabigname"
+				return p
+			}(),
+			wantErr: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := &validationHandler{}
-			b, err := yaml.YAMLToJSON([]byte(tt.provider))
-			if err != nil {
-				t.Fatalf("Error parsing yaml: %s", err)
-			}
+			h := &validationHandler{log: log}
+			b, err := convertToRawExtension(tt.provider)
+			require.NoError(t, err)
 
-			req := &atypes.Request{
+			req := &admission.Request{
 				AdmissionRequest: admissionv1.AdmissionRequest{
-					Object: runtime.RawExtension{
-						Raw: b,
-					},
+					Kind:   metav1.GroupVersionKind(externadatav1alpha1.SchemeGroupVersion.WithKind("Provider")),
+					Object: *b,
+					Name:   tt.provider.Name,
 				},
 			}
-			got, err := h.validateProvider(req)
+			got, err := h.validateGatekeeperResources(context.Background(), req)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("validationHandler.validateProvider() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("validationHandler.validateGatekeeperResources() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if got != tt.want {
-				t.Errorf("validationHandler.validateProvider() = %v, want %v", got, tt.want)
+				t.Errorf("validationHandler.validateGatekeeperResources() = %v, want %v", got, tt.want)
 			}
 		})
 	}
+}
+
+// converts runtime.Object to runtime.RawExtension.
+func convertToRawExtension(obj runtime.Object) (*runtime.RawExtension, error) {
+	re := &runtime.RawExtension{}
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return nil, err
+	}
+	re.Raw = b
+	return re, nil
 }

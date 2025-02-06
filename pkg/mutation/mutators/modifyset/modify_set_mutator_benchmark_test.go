@@ -5,15 +5,19 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/open-policy-agent/gatekeeper/apis/mutations/unversioned"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/match"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/path/tester"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/apis/mutations/unversioned"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/match"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/path/tester"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
+const (
+	spec = "spec"
+)
+
 func modifyset(value interface{}, location string) *unversioned.ModifySet {
-	result := &unversioned.ModifySet{
+	return &unversioned.ModifySet{
 		Spec: unversioned.ModifySetSpec{
 			ApplyTo: []match.ApplyTo{{
 				Groups:   []string{"*"},
@@ -29,12 +33,10 @@ func modifyset(value interface{}, location string) *unversioned.ModifySet {
 			},
 		},
 	}
-
-	return result
 }
 
 func benchmarkModifySetMutator(b *testing.B, n int) {
-	mutator, err := MutatorForModifySet(modifyset("foo", "spec"+strings.Repeat(".spec", n-1)))
+	mutator, err := MutatorForModifySet(modifyset("foo", spec+strings.Repeat(".spec", n-1)))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -44,7 +46,7 @@ func benchmarkModifySetMutator(b *testing.B, n int) {
 	}
 	p := make([]string, n)
 	for i := 0; i < n; i++ {
-		p[i] = "spec"
+		p[i] = spec
 	}
 	_, err = mutator.Mutate(&types.Mutable{Object: obj})
 	if err != nil {
@@ -58,7 +60,7 @@ func benchmarkModifySetMutator(b *testing.B, n int) {
 }
 
 func benchmarkNoModifySetMutator(b *testing.B, n int) {
-	path := "spec" + strings.Repeat(".spec", n-1)
+	path := spec + strings.Repeat(".spec", n-1)
 	a := modifyset("foo", path)
 	a.Spec.Parameters.PathTests = []unversioned.PathTest{{
 		SubPath:   path,
@@ -74,7 +76,7 @@ func benchmarkNoModifySetMutator(b *testing.B, n int) {
 	}
 	p := make([]string, n)
 	for i := 0; i < n; i++ {
-		p[i] = "spec"
+		p[i] = spec
 	}
 	_, err = mutator.Mutate(&types.Mutable{Object: obj})
 	if err != nil {

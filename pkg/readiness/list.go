@@ -20,7 +20,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/open-policy-agent/gatekeeper/pkg/syncutil"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/syncutil"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -80,6 +80,11 @@ type retryPredicate func(err error) bool
 // retryAll is a retryPredicate that will retry any error.
 func retryAll(_ error) bool {
 	return true
+}
+
+// retryNone is a retryPredicate that will never retry an error.
+func retryNone(_ error) bool {
+	return false
 }
 
 // retryUnlessUnregistered is a retryPredicate that retries all errors except

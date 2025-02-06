@@ -60,8 +60,14 @@ kind: Deployment
 metadata:
   name: gatekeeper-controller-manager
   namespace: gatekeeper-system
+  labels:
+    HELMSUBST_DEPLOYMENT_LABELS: ""
 spec:
   replicas: HELMSUBST_DEPLOYMENT_REPLICAS
+  revisionHistoryLimit: HELMSUBST_DEPLOYMENT_REVISION_HISTORY_LIMIT
+  strategy:
+    type: HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_STRATEGY_TYPE
+    HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_STRATEGY_ROLLINGUPDATE: ""
   template:
     metadata:
       annotations:
@@ -75,7 +81,9 @@ spec:
             - --prometheus-port=HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_METRICS_PORT
             - --logtostderr
             - --log-denies={{ .Values.logDenies }}
-            - --emit-admission-events={{ .Values.emitAdmissionEvents }}
+            - HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_EMIT_ADMISSION_EVENTS
+            - HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_LOG_STATS_ADMISSION
+            - --admission-events-involved-namespace={{ .Values.admissionEventsInvolvedNamespace }}
             - --log-level={{ (.Values.controllerManager.logLevel | empty | not) | ternary .Values.controllerManager.logLevel .Values.logLevel }}
             - --exempt-namespace={{ .Release.Namespace }}
             - --operation=webhook
@@ -86,6 +94,10 @@ spec:
             - --disable-cert-rotation={{ .Values.controllerManager.disableCertRotation }}
             - --max-serving-threads={{ .Values.maxServingThreads }}
             - --tls-min-version={{ .Values.controllerManager.tlsMinVersion }}
+            - --validating-webhook-configuration-name={{ .Values.validatingWebhookName }}
+            - --mutating-webhook-configuration-name={{ .Values.mutatingWebhookName }}
+            - --external-data-provider-response-cache-ttl={{ .Values.externaldataProviderResponseCacheTTL }}
+            - --enable-k8s-native-validation={{ .Values.enableK8sNativeValidation }}
             - HELMBUST_ENABLE_TLS_APISERVER_AUTHENTICATION
             - HELMSUBST_METRICS_BACKEND_ARG
             - HELMSUBST_TLS_HEALTHCHECK_ENABLED_ARG
@@ -93,7 +105,10 @@ spec:
             - HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_DISABLED_BUILTIN
             - HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_EXEMPT_NAMESPACES
             - HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_EXEMPT_NAMESPACE_PREFIXES
+            - HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_EXEMPT_NAMESPACE_SUFFIXES
             - HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_LOGFILE
+            - HELMSUBST_DEPLOYMENT_DEFAULT_CREATE_VAP_FOR_TEMPLATES
+            - HELMSUBST_DEPLOYMENT_DEFAULT_CREATE_VAPB_FOR_CONSTRAINTS
           imagePullPolicy: "{{ .Values.image.pullPolicy }}"
           HELMSUBST_AUDIT_CONTROLLER_MANAGER_DEPLOYMENT_IMAGE_RELEASE: ""
           ports:
@@ -134,17 +149,22 @@ spec:
         HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_IMAGE_PULL_SECRETS: ""
       hostNetwork: HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_HOST_NETWORK
       dnsPolicy: HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_DNS_POLICY
+      serviceAccountName: HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_SERVICE_ACCOUNT_NAME
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: gatekeeper-audit
   namespace: gatekeeper-system
+  labels:
+    HELMSUBST_DEPLOYMENT_LABELS: ""
 spec:
+  revisionHistoryLimit: HELMSUBST_DEPLOYMENT_REVISION_HISTORY_LIMIT
   template:
     metadata:
       annotations:
         HELMSUBST_ANNOTATIONS: ""
+        HELMSUBST_AUDIT_POD_ANNOTATIONS: ""
     spec:
       containers:
         - name: manager
@@ -152,12 +172,18 @@ spec:
             - --audit-interval={{ .Values.auditInterval }}
             - --log-level={{ (.Values.audit.logLevel | empty | not) | ternary .Values.audit.logLevel .Values.logLevel }}
             - --constraint-violations-limit={{ .Values.constraintViolationsLimit }}
+            - --validating-webhook-configuration-name={{ .Values.validatingWebhookName }}
+            - --mutating-webhook-configuration-name={{ .Values.mutatingWebhookName }}
             - --audit-from-cache={{ .Values.auditFromCache }}
-            - --audit-chunk-size={{ .Values.auditChunkSize }}
+            - HELMSUBST_DEPLOYMENT_AUDIT_CHUNK_SIZE
             - --audit-match-kind-only={{ .Values.auditMatchKindOnly }}
-            - --emit-audit-events={{ .Values.emitAuditEvents }}
+            - HELMSUBST_DEPLOYMENT_AUDIT_EMIT_EVENTS
+            - HELMSUBST_DEPLOYMENT_AUDIT_LOG_STATS_ADMISSION
+            - --audit-events-involved-namespace={{ .Values.auditEventsInvolvedNamespace }}
             - --operation=audit
             - --operation=status
+            - --operation=generate
+            - HELMSUBST_DEPLOYMENT_AUDIT_PUBSUB_ARGS
             - HELMSUBST_MUTATION_STATUS_ENABLED_ARG
             - --logtostderr
             - --health-addr=:HELMSUBST_DEPLOYMENT_AUDIT_HEALTH_PORT
@@ -167,6 +193,11 @@ spec:
             - HELMSUBST_METRICS_BACKEND_ARG
             - HELMSUBST_DEPLOYMENT_AUDIT_LOGFILE
             - --disable-cert-rotation={{ or .Values.audit.disableCertRotation .Values.externalCertInjection.enabled }}
+            - --external-data-provider-response-cache-ttl={{ .Values.externaldataProviderResponseCacheTTL }}
+            - --enable-k8s-native-validation={{ .Values.enableK8sNativeValidation }}
+            - HELMSUBST_DEPLOYMENT_DEFAULT_CREATE_VAP_FOR_TEMPLATES
+            - HELMSUBST_DEPLOYMENT_DEFAULT_CREATE_VAPB_FOR_CONSTRAINTS
+            - HELMSUBST_DEPLOYMENT_AUDIT_DEFAULT_WAIT_VAPB_GENERATION
           imagePullPolicy: "{{ .Values.image.pullPolicy }}"
           HELMSUBST_AUDIT_CONTROLLER_MANAGER_DEPLOYMENT_IMAGE_RELEASE: ""
           ports:
@@ -202,6 +233,7 @@ spec:
         HELMSUBST_DEPLOYMENT_AUDIT_IMAGE_PULL_SECRETS: ""
       hostNetwork: HELMSUBST_DEPLOYMENT_AUDIT_HOST_NETWORK
       dnsPolicy: HELMSUBST_DEPLOYMENT_AUDIT_DNS_POLICY
+      serviceAccountName: HELMSUBST_DEPLOYMENT_AUDIT_SERVICE_ACCOUNT_NAME
 ---
 apiVersion: v1
 kind: Secret
@@ -238,6 +270,7 @@ webhooks:
   objectSelector: HELMSUBST_MUTATING_WEBHOOK_OBJECT_SELECTOR
   sideEffects: None
   timeoutSeconds: HELMSUBST_MUTATING_WEBHOOK_TIMEOUT
+  matchConditions: HELMSUBST_MUTATING_WEBHOOK_MATCH_CONDITIONS
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
@@ -264,6 +297,7 @@ webhooks:
   failurePolicy: HELMSUBST_VALIDATING_WEBHOOK_FAILURE_POLICY
   rules:
   - HELMSUBST_VALIDATING_WEBHOOK_OPERATION_RULES
+  matchConditions: HELMSUBST_VALIDATING_WEBHOOK_MATCH_CONDITIONS
 - clientConfig:
     service:
       name: gatekeeper-webhook-service

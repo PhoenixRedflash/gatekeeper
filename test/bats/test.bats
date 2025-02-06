@@ -60,6 +60,47 @@ teardown_file() {
   wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl get validatingwebhookconfigurations.admissionregistration.k8s.io gatekeeper-validating-webhook-configuration"
 }
 
+@test "vap test" {
+  if [ -z $ENABLE_VAP_TESTS ]; then
+    skip "skipping vap tests"
+  fi
+  local api="$(kubectl api-resources | grep validatingadmission)"
+  if [[ -z "$api" ]]; then
+    echo "vap is not enabled for the cluster. skip vap test"
+  else
+    wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl apply -f ${BATS_TESTS_DIR}/templates/k8srequiredlabels_template_vap.yaml"
+
+    # check status resource on expansion template
+    wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl get constrainttemplates.templates.gatekeeper.sh k8srequiredlabelsvap -ojson | jq -r -e '.status.byPod[0]'"
+
+    kubectl get constrainttemplates.templates.gatekeeper.sh k8srequiredlabelsvap -oyaml
+
+    wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl get ValidatingAdmissionPolicy gatekeeper-k8srequiredlabelsvap"
+
+    wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl apply -f ${BATS_TESTS_DIR}/constraints/all_ns_must_have_label_provided_vapbinding_scoped.yaml"
+
+    wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl apply -f ${BATS_TESTS_DIR}/constraints/all_ns_must_have_label_provided_vapbinding.yaml"
+    
+    wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl get ValidatingAdmissionPolicyBinding gatekeeper-all-must-have-label"
+
+    wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl get ValidatingAdmissionPolicyBinding gatekeeper-all-must-have-label-scoped"
+    
+    run kubectl apply -f ${BATS_TESTS_DIR}/bad/bad_ns.yaml
+    assert_match 'Warning' "${output}"
+    assert_match 'denied' "${output}"
+    assert_failure
+    kubectl apply -f ${BATS_TESTS_DIR}/good/good_ns.yaml
+    kubectl delete --ignore-not-found -f ${BATS_TESTS_DIR}/good/good_ns.yaml
+    kubectl delete --ignore-not-found -f ${BATS_TESTS_DIR}/bad/bad_ns.yaml
+    kubectl delete --ignore-not-found -f ${BATS_TESTS_DIR}/constraints/all_ns_must_have_label_provided_vapbinding.yaml
+    kubectl delete --ignore-not-found -f ${BATS_TESTS_DIR}/constraints/all_ns_must_have_label_provided_vapbinding_scoped.yaml
+
+    wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl delete --ignore-not-found -f ${BATS_TESTS_DIR}/templates/k8srequiredlabels_template_vap.yaml"
+    # wait for k8s to register deletion with eventual consistency
+    sleep 5
+  fi
+}
+
 @test "gatekeeper mutation test" {
   kubectl apply -f ${BATS_TESTS_DIR}/mutations/k8sownerlabel_assignmetadata.yaml
   wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "mutator_enforced AssignMetadata k8sownerlabel"
@@ -120,6 +161,9 @@ teardown_file() {
 
   kubectl apply -f ${BATS_TESTS_DIR}/templates/k8srequiredlabels_template.yaml
   wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl apply -f ${BATS_TESTS_DIR}/constraints/all_cm_must_have_gatekeeper_audit.yaml"
+  wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl apply -f ${BATS_TESTS_DIR}/constraints/all_cm_must_have_gatekeeper_scoped_audit.yaml"
+  wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl apply -f ${BATS_TESTS_DIR}/constraints/all_cm_must_have_gatekeeper_scoped.yaml"
+  wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl apply -f ${BATS_TESTS_DIR}/constraints/all_cm_must_have_gatekeeper_scoped_webhook.yaml"
 }
 
 @test "no ignore label unless namespace is exempt test" {
@@ -159,6 +203,15 @@ teardown_file() {
   kubectl apply -f ${BATS_TESTS_DIR}/bad/bad_cm.yaml
 
   kubectl delete --ignore-not-found -f ${BATS_TESTS_DIR}/bad/bad_cm.yaml
+
+  # deploying a violation to get rejected with scoped enforcement actions
+  run kubectl apply -f ${BATS_TESTS_DIR}/bad/bad_cm_scoped.yaml
+
+  assert_match 'Warning' "${output}"
+  assert_match 'denied the request' "${output}"
+  assert_failure
+
+  kubectl delete --ignore-not-found -f ${BATS_TESTS_DIR}/bad/bad_cm_scoped.yaml
 }
 
 @test "container limits test" {
@@ -219,6 +272,116 @@ __required_labels_audit_test() {
     echo "Audit entry count is ${audit_entries}, wanted ${expected}"
     return 3
   fi
+
+  local cstr="$(kubectl get k8srequiredlabels.constraints.gatekeeper.sh cm-must-have-gk-scoped -ojson)"
+  if [[ $? -ne 0 ]]; then
+    echo "error retrieving constraint"
+    return 1
+  fi
+
+  echo "${cstr}"
+
+  local total_violations=$(echo "${cstr}" | jq '.status.totalViolations')
+  if [[ "${total_violations}" -ne "${expected}" ]]; then
+    echo "totalViolations is ${total_violations}, wanted ${expected}"
+    return 2
+  fi
+
+  local audit_entries=$(echo "${cstr}" | jq '.status.violations | length')
+  if [[ "${audit_entries}" -ne "${expected}" ]]; then
+    echo "Audit entry count is ${audit_entries}, wanted ${expected}"
+    return 3
+  fi
+
+  local enforcementActions=$(echo "${cstr}" | jq -r '.status.violations[].enforcementAction')
+  local match=true
+
+  for enforcementAction in $enforcementActions; do
+    if [[ "${enforcementAction}" != "scoped" ]]; then
+      echo "Mismatch found: Enforcement action is ${enforcementAction}, expected scoped"
+      match=false
+    fi
+  done
+
+  if [[ "${match}" == "false" ]]; then
+    return 3
+  fi
+
+  local scopedEnforcementActions=$(echo "${cstr}" | jq -r '.status.violations[].enforcementActions[]')
+  local match=true
+
+  for scopedEnforcementAction in $scopedEnforcementActions; do
+    if [[ "${scopedEnforcementAction}" != "deny" ]]; then
+      echo "Mismatch found: Enforcement action is ${scopedEnforcementAction}, expected deny"
+      match=false
+    fi
+  done
+
+  if [[ "${match}" == "false" ]]; then
+    return 3
+  fi
+
+  local cstr="$(kubectl get k8srequiredlabels.constraints.gatekeeper.sh cm-must-have-gk-scoped-audit -ojson)"
+  if [[ $? -ne 0 ]]; then
+    echo "error retrieving constraint"
+    return 1
+  fi
+
+  echo "${cstr}"
+
+  local total_violations=$(echo "${cstr}" | jq '.status.totalViolations')
+  if [[ "${total_violations}" -ne "${expected}" ]]; then
+    echo "totalViolations is ${total_violations}, wanted ${expected}"
+    return 2
+  fi
+
+  local audit_entries=$(echo "${cstr}" | jq '.status.violations | length')
+  if [[ "${audit_entries}" -ne "${expected}" ]]; then
+    echo "Audit entry count is ${audit_entries}, wanted ${expected}"
+    return 3
+  fi
+
+  local enforcementActions=$(echo "${cstr}" | jq -r '.status.violations[].enforcementAction')
+  local match=true
+
+  for enforcementAction in $enforcementActions; do
+    if [[ "${enforcementAction}" != "scoped" ]]; then
+      echo "Mismatch found: Enforcement action is ${enforcementAction}, expected scoped"
+      match=false
+    fi
+  done
+
+  if [[ "${match}" == "false" ]]; then
+    return 3
+  fi
+
+  local scopedEnforcementActions=$(echo "${cstr}" | jq -r '.status.violations[].enforcementActions[]')
+  local match=true
+
+  for scopedEnforcementAction in $scopedEnforcementActions; do
+    if [[ "${scopedEnforcementAction}" != "warn" ]]; then
+      echo "Mismatch found: Enforcement action is ${scopedEnforcementAction}, expected warn"
+      match=false
+    fi
+  done
+
+  if [[ "${match}" == "false" ]]; then
+    return 3
+  fi
+
+  local cstr="$(kubectl get k8srequiredlabels.constraints.gatekeeper.sh cm-must-have-gk-scoped-webhook -ojson)"
+  if [[ $? -ne 0 ]]; then
+    echo "error retrieving constraint"
+    return 1
+  fi
+
+  echo "${cstr}"
+
+  local total_violations=$(echo "${cstr}" | jq '.status.totalViolations')
+  if [[ "${total_violations}" -ne "0" ]]; then
+    echo "totalViolations is ${total_violations}, wanted 0"
+    return 2
+  fi
 }
 
 @test "required labels audit test" {
@@ -228,14 +391,14 @@ __required_labels_audit_test() {
 
 @test "emit events test" {
   # list events for easy debugging
-  kubectl get events -n ${GATEKEEPER_NAMESPACE}
-  events=$(kubectl get events -n ${GATEKEEPER_NAMESPACE} --field-selector reason=FailedAdmission -o json | jq -r '.items[] | select(.metadata.annotations.constraint_kind=="K8sRequiredLabels" )' | jq -s '. | length')
+  kubectl get events -n gatekeeper-test-playground
+  events=$(kubectl get events -n gatekeeper-test-playground --field-selector reason=FailedAdmission -o json | jq -r '.items[] | select(.metadata.annotations.constraint_kind=="K8sRequiredLabels" )' | jq -s '. | length')
   [[ "$events" -ge 1 ]]
 
-  events=$(kubectl get events -n ${GATEKEEPER_NAMESPACE} --field-selector reason=DryrunViolation -o json | jq -r '.items[] | select(.metadata.annotations.constraint_kind=="K8sRequiredLabels" )' | jq -s '. | length')
+  events=$(kubectl get events -n gatekeeper-test-playground --field-selector reason=DryrunViolation -o json | jq -r '.items[] | select(.metadata.annotations.constraint_kind=="K8sRequiredLabels" )' | jq -s '. | length')
   [[ "$events" -ge 1 ]]
 
-  events=$(kubectl get events -n ${GATEKEEPER_NAMESPACE} --field-selector reason=AuditViolation -o json | jq -r '.items[] | select(.metadata.annotations.constraint_kind=="K8sRequiredLabels" )' | jq -s '. | length')
+  events=$(kubectl get events -n gatekeeper-test-playground --field-selector reason=AuditViolation -o json | jq -r '.items[] | select(.metadata.annotations.constraint_kind=="K8sRequiredLabels" )' | jq -s '. | length')
   [[ "$events" -ge 1 ]]
 }
 
@@ -417,6 +580,12 @@ __expansion_audit_test() {
   run kubectl apply -f test/expansion/loadbalancers_must_have_env.yaml
   wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "constraint_enforced k8srequiredlabels loadbalancers-must-have-env"
 
+  # check status resource on expansion template
+  wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl get -f test/expansion/expand_deployments.yaml -ojson | jq -r -e '.status.byPod[0]'"
+  local temp_uid=$(kubectl get -f test/expansion/expand_deployments.yaml -o jsonpath='{.metadata.uid}')
+  local byPod_uid=$(kubectl get -f test/expansion/expand_deployments.yaml -o jsonpath='{.status.byPod[0].templateUID}')
+  assert_match ${temp_uid} ${byPod_uid}
+
   # assert that creating deployment without 'env' label is rejected
   run kubectl apply -f test/expansion/deployment_no_label.yaml
   assert_failure
@@ -444,6 +613,38 @@ __expansion_audit_test() {
   assert_success
   # with a violating deployment on cluster, test that audit produces expansion violations
   wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "__expansion_audit_test"
+  run kubectl delete -f test/expansion/warn_expand_deployments
+  run kubectl delete -f test/expansion/deployment_no_label.yaml
+
+  # test source field on Constraints
+  run kubectl apply -f test/expansion/expand_deployments.yaml
+  run kubectl delete --ignore-not-found -f test/expansion/loadbalancers_must_have_env.yaml
+  run kubectl apply -f test/expansion/loadbalancers_must_have_env_source_gen.yaml
+  wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "constraint_enforced k8srequiredlabels loadbalancers-must-have-env-gen"
+  # a generated pod should be denied
+  run kubectl apply -f test/expansion/deployment_no_label.yaml
+  assert_failure
+  # an original pod should be accepted, as the constraint only matches generated pods
+  run kubectl run nginx --image=nginx --dry-run=server --output json
+  assert_success
+
+  # test recursive expansion cronjob->job->pod triggers pod violation when creating cronjob
+  run kubectl apply -f test/expansion/expand_cronjob_job_pod.yaml
+  wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl get expansiontemplate expand-cronjobs  -ojson | jq -r -e '.status.byPod[0]'"
+  wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl get expansiontemplate expand-jobs  -ojson | jq -r -e '.status.byPod[0]'"
+  run kubectl apply -f test/expansion/cronjob.yaml
+  assert_failure
+
+  # test adding a ExpansionTemplate that creates a cycle updates template's status
+  run kubectl apply -f test/expansion/expand_pod_cronjob.yaml
+  wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl get -f test/expansion/expand_pod_cronjob.yaml -ojson | jq -r -e '.status.byPod[0]'"
+  # expand-cronjobs, expand-jobs, and expand_pod_cronjob should each have an error set in their status
+  local status_err=$(kubectl get -f test/expansion/expand_pod_cronjob.yaml -o jsonpath='{.status.byPod[0].errors}' | grep "template forms expansion cycle" | wc -l)
+  assert_match "${status_err}" "1"
+  local status_err2=$(kubectl get expansiontemplate expand-cronjobs -o jsonpath='{.status.byPod[0].errors}' | grep "template forms expansion cycle" | wc -l)
+  assert_match "${status_err2}" "1"
+  local status_err3=$(kubectl get expansiontemplate expand-jobs -o jsonpath='{.status.byPod[0].errors}' | grep "template forms expansion cycle" | wc -l)
+  assert_match "${status_err3}" "1"
 
   # cleanup
   run kubectl delete --ignore-not-found namespace loadbalancers
@@ -451,7 +652,32 @@ __expansion_audit_test() {
   run kubectl delete --ignore-not-found -f test/expansion/warn_expand_deployments.yaml
   run kubectl delete --ignore-not-found -f test/expansion/k8srequiredlabels_ct.yaml
   run kubectl delete --ignore-not-found -f test/expansion/loadbalancers_must_have_env.yaml
+  run kubectl delete --ignore-not-found -f test/expansion/loadbalancers_must_have_env_source_gen.yaml
   run kubectl delete --ignore-not-found -f test/expansion/assignmeta_env.yaml
   run kubectl delete --ignore-not-found -f test/expansion/deployment_no_label.yaml
   run kubectl delete --ignore-not-found -f test/expansion/deployment_with_label.yaml
+  run kubectl delete --ignore-not-found -f test/expansion/cronjob.yaml
+  run kubectl delete --ignore-not-found -f test/expansion/expand_cronjob_job_pod.yaml
+  run kubectl delete --ignore-not-found -f test/expansion/expand_pod_cronjob.yaml
+}
+
+@test "gatekeeper pubsub test" {
+  if [ -z $ENABLE_PUBSUB_TESTS ]; then
+    skip "skipping pubsub tests"
+  fi
+
+  run kubectl create ns nginx
+  run kubectl create -f test/pubsub/nginx_deployment.yaml
+
+  run kubectl apply -f test/pubsub/k8srequiredlabels_ct.yaml
+  run kubectl apply -f test/pubsub/pod_must_have_test.yaml
+
+  wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "constraint_enforced k8srequiredlabels pod-must-have-test"
+
+  wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "total_violations"
+
+  run kubectl delete -f test/pubsub/k8srequiredlabels_ct.yaml --ignore-not-found
+  run kubectl delete -f test/pubsub/pod_must_have_test.yaml --ignore-not-found
+  run kubectl delete -f test/pubsub/nginx_deployment.yaml --ignore-not-found
+  run kubectl delete ns nginx --ignore-not-found
 }

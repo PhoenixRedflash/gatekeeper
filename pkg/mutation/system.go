@@ -7,9 +7,9 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/externaldata"
-	"github.com/open-policy-agent/gatekeeper/apis/mutations/unversioned"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/schema"
-	"github.com/open-policy-agent/gatekeeper/pkg/mutation/types"
+	"github.com/open-policy-agent/gatekeeper/v3/apis/mutations/unversioned"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/schema"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/mutation/types"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
@@ -183,7 +183,12 @@ func (s *System) mutate(mutable *types.Mutable) (int, error) {
 			}
 
 			mutator := s.mutatorsMap[id]
-			if mutator.Matches(mutable) {
+			matches, err := mutator.Matches(mutable)
+			if err != nil {
+				return iteration, matchesErr(err, mutator.ID(), mutable.Object)
+			}
+
+			if matches {
 				mutated, err := mutator.Mutate(mutable)
 				if mutated {
 					appliedMutations = append(appliedMutations, mutator)
@@ -207,7 +212,7 @@ func (s *System) mutate(mutable *types.Mutable) (int, error) {
 			}
 
 			if *MutationLoggingEnabled {
-				logAppliedMutations("Mutation applied", mutationUUID, original, allAppliedMutations)
+				logAppliedMutations("Mutation applied", mutationUUID, original, allAppliedMutations, mutable.Source)
 			}
 
 			if *MutationAnnotationsEnabled {
@@ -223,7 +228,7 @@ func (s *System) mutate(mutable *types.Mutable) (int, error) {
 	}
 
 	if *MutationLoggingEnabled {
-		logAppliedMutations("Mutation not converging", mutationUUID, original, allAppliedMutations)
+		logAppliedMutations("Mutation not converging", mutationUUID, original, allAppliedMutations, mutable.Source)
 	}
 
 	return maxIterations, fmt.Errorf("%w: mutation %s not converging for %s %s %s %s",
@@ -232,7 +237,7 @@ func (s *System) mutate(mutable *types.Mutable) (int, error) {
 		mutable.Object.GroupVersionKind().Group,
 		mutable.Object.GroupVersionKind().Kind,
 		mutable.Object.GetNamespace(),
-		mutable.Object.GetName())
+		getNameOrGenerateName(mutable.Object))
 }
 
 func mutateErr(err error, uid uuid.UUID, mID types.ID, obj *unstructured.Unstructured) error {
@@ -242,5 +247,14 @@ func mutateErr(err error, uid uuid.UUID, mID types.ID, obj *unstructured.Unstruc
 		obj.GroupVersionKind().Group,
 		obj.GroupVersionKind().Kind,
 		obj.GetNamespace(),
-		obj.GetName())
+		getNameOrGenerateName(obj))
+}
+
+func matchesErr(err error, mID types.ID, obj *unstructured.Unstructured) error {
+	return errors.Wrapf(err, "matching for mutator %v failed for %s %s %s %s",
+		mID,
+		obj.GroupVersionKind().Group,
+		obj.GroupVersionKind().Kind,
+		obj.GetNamespace(),
+		getNameOrGenerateName(obj))
 }

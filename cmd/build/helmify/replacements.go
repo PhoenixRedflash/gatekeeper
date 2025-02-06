@@ -19,9 +19,17 @@ var replacements = map[string]string{
 
 	"HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_LIVENESS_TIMEOUT": `{{ .Values.controllerManager.livenessTimeout }}`,
 
+	"- HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_EMIT_ADMISSION_EVENTS": `{{ if hasKey .Values "emitAdmissionEvents" }}- --emit-admission-events={{ .Values.emitAdmissionEvents }}{{- end }}`,
+
+	"- HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_LOG_STATS_ADMISSION": `{{ if hasKey .Values "logStatsAdmission" }}- --log-stats-admission={{ .Values.logStatsAdmission }}{{- end }}`,
+
 	"HELMSUBST_DEPLOYMENT_AUDIT_HOST_NETWORK": `{{ .Values.audit.hostNetwork }}`,
 
 	"HELMSUBST_DEPLOYMENT_AUDIT_DNS_POLICY": `{{ .Values.audit.dnsPolicy }}`,
+
+	"HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_SERVICE_ACCOUNT_NAME": `{{ .Values.controllerManager.serviceAccount.name }}`,
+
+	"HELMSUBST_DEPLOYMENT_AUDIT_SERVICE_ACCOUNT_NAME": `{{ .Values.audit.serviceAccount.name }}`,
 
 	"HELMSUBST_DEPLOYMENT_AUDIT_HEALTH_PORT": `{{ .Values.audit.healthPort }}`,
 
@@ -55,6 +63,13 @@ var replacements = map[string]string{
 
 	`HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_AFFINITY: ""`: `{{- toYaml .Values.controllerManager.affinity | nindent 8 }}`,
 
+	"HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_STRATEGY_TYPE": `{{ .Values.controllerManager.strategyType }}`,
+
+	`HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_STRATEGY_ROLLINGUPDATE: ""`: `{{- if .Values.controllerManager.strategyRollingUpdate }}
+    rollingUpdate:
+    {{- toYaml .Values.controllerManager.strategyRollingUpdate | nindent 6 }}
+    {{- end }}`,
+
 	`HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_SECURITY_CONTEXT: ""`: `{{- if .Values.enableRuntimeDefaultSeccompProfile }}
           seccompProfile:
             type: RuntimeDefault
@@ -71,9 +86,23 @@ var replacements = map[string]string{
 
 	"HELMSUBST_DEPLOYMENT_REPLICAS": `{{ .Values.replicas }}`,
 
+	`HELMSUBST_DEPLOYMENT_LABELS: ""`: `{{- include "gatekeeper.commonLabels" . | nindent 4 }}`,
+
+	"HELMSUBST_DEPLOYMENT_REVISION_HISTORY_LIMIT": `{{ .Values.revisionHistoryLimit }}`,
+
 	`HELMSUBST_ANNOTATIONS: ""`: `{{- if .Values.podAnnotations }}
         {{- toYaml .Values.podAnnotations | trim | nindent 8 }}
         {{- end }}`,
+
+	`HELMSUBST_AUDIT_POD_ANNOTATIONS: ""`: `{{- if .Values.auditPodAnnotations }}
+        {{- toYaml .Values.auditPodAnnotations | trim | nindent 8 }}
+        {{- end }}`,
+
+	"- HELMSUBST_DEPLOYMENT_AUDIT_CHUNK_SIZE": `{{ if hasKey .Values "auditChunkSize" }}- --audit-chunk-size={{ .Values.auditChunkSize }}{{- end }}`,
+
+	"- HELMSUBST_DEPLOYMENT_AUDIT_EMIT_EVENTS": `{{ if hasKey .Values "emitAuditEvents" }}- --emit-audit-events={{ .Values.emitAuditEvents }}{{- end }}`,
+
+	"- HELMSUBST_DEPLOYMENT_AUDIT_LOG_STATS_ADMISSION": `{{ if hasKey .Values "logStatsAudit" }}- --log-stats-audit={{ .Values.logStatsAudit }}{{- end }}`,
 
 	"HELMSUBST_SECRET_ANNOTATIONS": `{{- toYaml .Values.secretAnnotations | trim | nindent 4 }}`,
 
@@ -84,6 +113,20 @@ var replacements = map[string]string{
 	"- HELMSUBST_MUTATION_ENABLED_ARG": `{{ if not .Values.disableMutation}}- --operation=mutation-webhook{{- end }}`,
 
 	"- HELMSUBST_MUTATION_STATUS_ENABLED_ARG": `{{ if not .Values.disableMutation}}- --operation=mutation-status{{- end }}`,
+
+	"- HELMSUBST_DEPLOYMENT_AUDIT_DEFAULT_WAIT_VAPB_GENERATION": `{{ if hasKey .Values "defaultWaitForVAPBGeneration"}}
+        - --default-wait-for-vapb-generation={{ .Values.defaultWaitForVAPBGeneration }}
+        {{- end }}`,
+
+	"- HELMSUBST_DEPLOYMENT_AUDIT_PUBSUB_ARGS": `{{ if hasKey .Values.audit "enablePubsub" }}
+        - --enable-pub-sub={{ .Values.audit.enablePubsub }}
+        {{- end }}
+        {{ if hasKey .Values.audit "connection" }}
+        - --audit-connection={{ .Values.audit.connection }}
+        {{- end }}
+        {{ if hasKey .Values.audit "channel" }}
+        - --audit-channel={{ .Values.audit.channel }}
+        {{- end }}`,
 
 	"HELMSUBST_MUTATING_WEBHOOK_FAILURE_POLICY": `{{ .Values.mutatingWebhookFailurePolicy }}`,
 
@@ -106,7 +149,7 @@ var replacements = map[string]string{
       {{- end }}
     {{- end }}`,
 
-	"HELMSUBST_MUTATING_WEBHOOK_OBJECT_SELECTOR": `{{ toYaml .Values.mutatingWebhookObjectSelector }}`,
+	"HELMSUBST_MUTATING_WEBHOOK_OBJECT_SELECTOR": `{{ toYaml .Values.mutatingWebhookObjectSelector | nindent 4 }}`,
 
 	"HELMSUBST_MUTATING_WEBHOOK_TIMEOUT": `{{ .Values.mutatingWebhookTimeoutSeconds }}`,
 	"- HELMSUBST_MUTATING_WEBHOOK_OPERATION_RULES": `{{- if .Values.mutatingWebhookCustomRules }}
@@ -121,7 +164,33 @@ var replacements = map[string]string{
     - UPDATE
     resources:
     - '*'
+    - pods/ephemeralcontainers
+    - pods/exec
+    - pods/log
+    - pods/eviction
+    - pods/portforward
+    - pods/proxy
+    - pods/attach
+    - pods/binding
+    - deployments/scale
+    - replicasets/scale
+    - statefulsets/scale
+    - replicationcontrollers/scale
+    - services/proxy
+    - nodes/proxy
+    - services/status
   {{- end }}`,
+
+	"HELMSUBST_MUTATING_WEBHOOK_CLIENT_CONFIG: \"\"": `{{- if .Values.mutatingWebhookURL }}
+    url: https://{{ .Values.mutatingWebhookURL }}/v1/mutate
+    {{- else }}
+    service:
+      name: gatekeeper-webhook-service
+      namespace: '{{ .Release.Namespace }}'
+      path: /v1/mutate
+    {{- end }}`,
+
+	"HELMSUBST_VALIDATING_WEBHOOK_MATCH_CONDITIONS": `{{ toYaml .Values.validatingWebhookMatchConditions | nindent 4 }}`,
 
 	"HELMSUBST_VALIDATING_WEBHOOK_TIMEOUT": `{{ .Values.validatingWebhookTimeoutSeconds }}`,
 
@@ -144,9 +213,18 @@ var replacements = map[string]string{
       {{- end }}
     {{- end }}`,
 
-	"HELMSUBST_VALIDATING_WEBHOOK_OBJECT_SELECTOR": `{{ toYaml .Values.validatingWebhookObjectSelector }}`,
+	"HELMSUBST_VALIDATING_WEBHOOK_OBJECT_SELECTOR": `{{ toYaml .Values.validatingWebhookObjectSelector | nindent 4 }}`,
 
 	"HELMSUBST_VALIDATING_WEBHOOK_CHECK_IGNORE_FAILURE_POLICY": `{{ .Values.validatingWebhookCheckIgnoreFailurePolicy }}`,
+
+	"HELMSUBST_VALIDATING_WEBHOOK_CLIENT_CONFIG: \"\"": `{{- if .Values.validatingWebhookURL }}
+    url: https://{{ .Values.validatingWebhookURL }}/v1/admit
+    {{- else }}
+    service:
+      name: gatekeeper-webhook-service
+      namespace: '{{ .Release.Namespace }}'
+      path: /v1/admit
+    {{- end }}`,
 
 	"HELMSUBST_RESOURCEQUOTA_POD_LIMIT": `{{ .Values.podCountLimit }}`,
 
@@ -162,6 +240,9 @@ var replacements = map[string]string{
     - UPDATE
     {{- if .Values.enableDeleteOperations }}
     - DELETE
+    {{- end }}
+    {{- if .Values.enableConnectOperations }}
+    - CONNECT
     {{- end }}
     resources:
     - '*'
@@ -184,6 +265,8 @@ var replacements = map[string]string{
     # For constraints that mitigate CVE-2020-8554
     - 'services/status'
   {{- end }}`,
+
+	"HELMSUBST_MUTATING_WEBHOOK_MATCH_CONDITIONS": `{{ toYaml .Values.mutatingWebhookMatchConditions | nindent 4 }}`,
 
 	"HELMSUBST_PDB_CONTROLLER_MANAGER_MINAVAILABLE": `{{ .Values.pdb.controllerManager.minAvailable }}`,
 
@@ -232,6 +315,11 @@ var replacements = map[string]string{
         - --exempt-namespace-prefix={{ . }}
         {{- end }}`,
 
+	"- HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_EXEMPT_NAMESPACE_SUFFIXES": `
+        {{- range .Values.controllerManager.exemptNamespaceSuffixes}}
+        - --exempt-namespace-suffix={{ . }}
+        {{- end }}`,
+
 	"- HELMSUBST_DEPLOYMENT_CONTROLLER_MANAGER_LOGFILE": `
         {{- if .Values.controllerManager.logFile}}
         - --log-file={{ .Values.controllerManager.logFile }}
@@ -240,5 +328,15 @@ var replacements = map[string]string{
 	"- HELMSUBST_DEPLOYMENT_AUDIT_LOGFILE": `
         {{- if .Values.audit.logFile}}
         - --log-file={{ .Values.audit.logFile }}
+        {{- end }}`,
+
+	"- HELMSUBST_DEPLOYMENT_DEFAULT_CREATE_VAP_FOR_TEMPLATES": `
+        {{- if hasKey .Values "defaultCreateVAPForTemplates"}}
+        - --default-create-vap-for-templates={{ .Values.defaultCreateVAPForTemplates }}
+        {{- end }}`,
+
+	"- HELMSUBST_DEPLOYMENT_DEFAULT_CREATE_VAPB_FOR_CONSTRAINTS": `
+        {{- if hasKey .Values "defaultCreateVAPBindingForConstraints"}}
+        - --default-create-vap-binding-for-constraints={{ .Values.defaultCreateVAPBindingForConstraints }}
         {{- end }}`,
 }

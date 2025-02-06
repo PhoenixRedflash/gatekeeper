@@ -13,3 +13,41 @@ tests:
     object: deny.yaml
     assertions:
     - violations: yes
+- name: foo-is-bar-with-scopedEA
+  template: template.yaml
+  constraint: constraint_with_scopedEA.yaml
+  cases:
+  - name: foo-bar
+    object: allow.yaml
+    assertions:
+    - violations: no
+  - name: foo-not-bar
+    object: deny.yaml
+    assertions:
+    - violations: yes
+- name: foo-is-bar-with-scopedEA-without-gator-EP
+  template: template.yaml
+  constraint: constraint_with_scopedEA_without_gator_ep.yaml
+  cases:
+  - name: foo-bar
+    object: allow.yaml
+    assertions:
+    - violations: no
+  - name: foo-not-bar
+    object: deny.yaml
+    assertions:
+    - violations: no
+- name: foo-is-bar-expansion
+  template: template.yaml
+  constraint: constraint.yaml
+  expansion: expansion.yaml
+  cases:
+  - name: foo-bar
+    object: allow_expansion.yaml
+    assertions:
+    - violations: no
+  - name: foo-not-bar
+    object: deny_expansion.yaml
+    assertions:
+    - violations: yes
+

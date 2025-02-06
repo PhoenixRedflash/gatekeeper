@@ -5,12 +5,12 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/open-policy-agent/gatekeeper/pkg/gator"
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/gator"
 )
 
 type Filter interface {
 	// MatchesTest returns true if the Test should be run.
-	MatchesTest(Test) bool
+	MatchesTest(*Test) bool
 	// MatchesCase returns true if Case caseName in Test testName should be run.
 	MatchesCase(testName, caseName string) bool
 }
@@ -68,7 +68,7 @@ type nilFilter struct{}
 
 var _ Filter = &nilFilter{}
 
-func (f *nilFilter) MatchesTest(Test) bool {
+func (f *nilFilter) MatchesTest(*Test) bool {
 	return true
 }
 
@@ -87,13 +87,13 @@ type orFilter struct {
 func newOrFilter(filter string) (Filter, error) {
 	regex, err := regexp.Compile(filter)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", gator.ErrInvalidFilter, err)
+		return nil, fmt.Errorf("%w: %w", gator.ErrInvalidFilter, err)
 	}
 
 	return &orFilter{regex: regex}, nil
 }
 
-func (f *orFilter) MatchesTest(t Test) bool {
+func (f *orFilter) MatchesTest(t *Test) bool {
 	if f.regex.MatchString(t.Name) {
 		return true
 	}
@@ -123,18 +123,18 @@ var _ Filter = &andFilter{}
 func newAndFilter(testFilter, caseFilter string) (Filter, error) {
 	testRegex, err := regexp.Compile(testFilter)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", gator.ErrInvalidFilter, err)
+		return nil, fmt.Errorf("%w: %w", gator.ErrInvalidFilter, err)
 	}
 
 	caseRegex, err := regexp.Compile(caseFilter)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", gator.ErrInvalidFilter, err)
+		return nil, fmt.Errorf("%w: %w", gator.ErrInvalidFilter, err)
 	}
 
 	return &andFilter{testRegex: testRegex, caseRegex: caseRegex}, nil
 }
 
-func (f *andFilter) MatchesTest(t Test) bool {
+func (f *andFilter) MatchesTest(t *Test) bool {
 	return f.testRegex.MatchString(t.Name)
 }
 

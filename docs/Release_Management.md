@@ -8,7 +8,7 @@ This document describes Gatekeeper project release management, which includes re
 
 - **X.Y.Z** refers to the version (git tag) of Gatekeeper that is released. This is the version of the Gatekeeper image and the Chart version.
 - **Breaking changes** refer to schema changes, flag changes, and behavior changes of Gatekeeper that may require a clean installation during upgrade, and it may introduce changes that could break backward compatibility.
-- **Milestone** should be designed to include feature sets to accommodate 2 months release cycles including test gates. GitHub's milestones are used by maintainers to manage each release. PRs and Issues for each release should be created as part of a corresponding milestone.
+- **Milestone** should be designed to include feature sets to accommodate 3 months release cycles including test gates. GitHub's milestones are used by maintainers to manage each release. PRs and Issues for each release should be created as part of a corresponding milestone.
 - **Patch releases** refer to applicable fixes, including security fixes, may be backported to support releases, depending on severity and feasibility.
 - **Test gates** should include soak tests and upgrade tests from the last minor version.
 
@@ -24,20 +24,20 @@ No plan to move to 4.0.0 unless there is a major design change like an incompati
 
 **Minor Releases**
 
-- X.Y.0-alpha.W, W >= 0 (Branch : master)
+- X.Y.0-alpha.W, W >= 0 (Branch: master)
     - Released as needed before we cut a beta X.Y release
     - Alpha release, cut from master branch
-- X.Y.0-beta.W, W >= 0 (Branch : master)
+- X.Y.0-beta.W, W >= 0 (Branch: master)
     - Released as needed before we cut a stable X.Y release
     - More stable than the alpha release to signal users to test things out
     - Beta release, cut from master branch
-- X.Y.0-rc.W, W >= 0 (Branch : master)
+- X.Y.0-rc.W, W >= 0 (Branch: release-X.Y)
     - Released as needed before we cut a stable X.Y release
-    - soak for ~ 2 weeks before cutting a stable release
-    - Release candidate release, cut from master branch
-- X.Y.0 (Branch: master)
-    - Released every ~ 2 months
-    - Stable release, cut from master when X.Y milestone is complete
+    - Soak for a total of ~2 weeks before cutting a stable release
+    - Release candidate release, cut from release-X.Y branch
+- X.Y.0 (Branch: release-X.Y)
+    - Released every ~3 months
+    - Stable release, cut from release-X.Y branch when X.Y milestone is complete
 
 **Patch Releases**
 

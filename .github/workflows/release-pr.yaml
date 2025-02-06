@@ -15,12 +15,18 @@ permissions:
 
 jobs:
   create-release-pull-request:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
-      - name: Set up Go 1.19
-        uses: actions/setup-go@v3
+      - name: Harden Runner
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
         with:
-          go-version: 1.19
+          egress-policy: audit
+
+      - name: Set up Go
+        uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version: "1.23"
+          check-latest: true
 
       - name: Set release version and target branch for vNext
         if: github.event_name == 'push'
@@ -35,6 +41,7 @@ jobs:
           echo "NEWVERSION=v${MAJOR_VERSION}.$((MINOR_VERSION+1)).0-beta.0" >> ${GITHUB_ENV}
           # pre-release is always being merged to the master branch
           echo "TARGET_BRANCH=master" >> ${GITHUB_ENV}
+          echo "TAG=${TAG}" >> ${GITHUB_ENV}
 
       - name: Set release version and target branch from input
         if: github.event_name == 'workflow_dispatch'
@@ -43,6 +50,7 @@ jobs:
           echo "${NEWVERSION}" | grep -E '^v[0-9]+\.[0-9]+\.[0-9](-(beta|rc)\.[0-9]+)?$' || (echo "release_version should be in the format vX.Y.Z, vX.Y.Z-beta.A, or vX.Y.Z-rc.B" && exit 1)
 
           echo "NEWVERSION=${NEWVERSION}" >> ${GITHUB_ENV}
+          echo "TAG=${NEWVERSION}" >> ${GITHUB_ENV}
           MAJOR_VERSION="$(echo "${NEWVERSION}" | cut -d '.' -f1 | tr -d 'v')"
           MINOR_VERSION="$(echo "${NEWVERSION}" | cut -d '.' -f2)"
 
@@ -54,7 +62,7 @@ jobs:
             echo "TARGET_BRANCH=master" >> ${GITHUB_ENV}
           fi
 
-      - uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
 
@@ -69,12 +77,27 @@ jobs:
       - run: make release-manifest promote-staging-manifest
 
       - if: github.event_name == 'push'
-        run: make version-docs NEWVERSION=v${MAJOR_VERSION}.${MINOR_VERSION}.x
+        run: |
+          tags=$(git tag -l --sort=-v:refname)
+          versions=''
+          for tag in $tags; do
+            if echo "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              opa=$(curl https://raw.githubusercontent.com/open-policy-agent/gatekeeper/$tag/go.mod | grep /opa | awk '{print $2}')
+              if [ $opa ]; then
+                versions+="| \`$tag\`          | \`$opa\`   |\n"
+              fi
+            fi
+          done
+          make version-docs NEWVERSION=v${MAJOR_VERSION}.${MINOR_VERSION}.x TAG=v${TAG} OPA_VERSIONS="${versions}"
 
       - name: Create release pull request
-        uses: peter-evans/create-pull-request@v4
+        uses: peter-evans/create-pull-request@67ccf781d68cd99b580ae25a5c18a1cc84ffff1f # v7.0.6
         with:
           commit-message: "chore: Prepare ${{ env.NEWVERSION }} release"
           title: "chore: Prepare ${{ env.NEWVERSION }} release"
           branch: "release-${{ env.NEWVERSION }}"
           base: "${{ env.TARGET_BRANCH }}"
+          signoff: true
+          labels: |
+            release-pr
+            ${{ github.event.inputs.release_version }}
